@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: axiom-bills-db
+    environment:
+      POSTGRES_USER: axiom
+      POSTGRES_PASSWORD: axiom
+      POSTGRES_DB: axiom_bills
+    ports:
+      - "5433:5432"
+    volumes:
+      - axiom_bills_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axiom -d axiom_bills"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  axiom_bills_data:

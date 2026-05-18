@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local DB (regenerate with `make migrate`)
+db/*.sqlite
+db/*.sqlite-wal
+db/*.sqlite-shm
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store

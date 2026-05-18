@@ -1,0 +1,96 @@
+# axiom-bills
+
+Live bill tracking for federal and state legislatures, feeding the Axiom
+encoding pipeline. Not a wrapper around OpenStates or LegiScan — pulls
+directly from authoritative sources (Congress.gov, state legislatures).
+
+## Layout
+
+```
+axiom-bills/
+  packages/
+    scrapers/      # Python. Per-jurisdiction bill scrapers + writer.
+    api/           # FastAPI read API.
+    web/           # Vite + React frontend (jurisdiction-first).
+  db/
+    migrations/    # Plain .sql files, applied in order.
+    axiom_bills.sqlite   # created by `make migrate`
+```
+
+## Jurisdictions in the prototype
+
+| Code    | Source                        | Status      |
+|---------|-------------------------------|-------------|
+| `us`    | Congress.gov API              | Full impl   |
+| `us-ny` | legislation.nysenate.gov API  | Full impl   |
+| `us-co` | leg.colorado.gov              | Stub        |
+| `us-mn` | revisor.mn.gov                | Stub        |
+
+## Quickstart (no Docker, SQLite under the hood)
+
+```bash
+# 1. Install scrapers + API
+cd packages/scrapers && uv sync --extra dev
+cd ../api && uv sync
+
+# 2. Install frontend
+cd ../web && npm install
+cd ../..
+
+# 3. Create the DB
+make migrate
+
+# 4. Free API keys
+export CONGRESS_API_KEY=...   # https://api.congress.gov/sign-up/
+export NYSENATE_API_KEY=...   # https://legislation.nysenate.gov/
+
+# 5. Pull some bills (~30 sec each)
+make scrape-federal
+make scrape-ny
+
+# 6. Two terminals:
+make api    # http://127.0.0.1:8000  (docs at /docs)
+make web    # http://127.0.0.1:5180
+```
+
+You can also open `db/axiom_bills.sqlite` in any SQLite browser to poke
+at the data directly.
+
+## How a scrape works
+
+```
+RateLimitedClient  → Congress.gov / NYSenate JSON
+        ↓
+  Bill / BillAction / BillVersion  (pydantic)
+        ↓
+  axiom_bills._common.db.write()
+        ↓
+  SQLite: bills (upsert), bill_actions (append-only by fingerprint),
+          bill_versions, scrape_runs
+        ↓
+  _refresh_current_status() rolls up actions → bills.current_status
+  using STATUS_ORDER so out-of-order actions can't unwind progress.
+```
+
+The status-text → normalized-status map lives per-jurisdiction in
+`jurisdictions/<code>/bill/status.py`, covered by
+`tests/test_status_patterns.py` (24 patterns currently green).
+
+## Why not OpenStates
+
+OpenStates is a great normalizer but: (a) free-tier rate limits make
+full 50-state coverage painful, (b) topic-search is keyword-driven so
+novel policy areas miss, (c) we want to own the status-normalization
+mapping per state — that's what determines when Pipeline B fires the
+"enactment" signal into the encoding stack.
+
+## Status
+
+Prototype. Federal + NY work end-to-end. CO + MN have status
+vocabularies done and tested but their `scrape()` methods return empty
+results. Schema and scraper base class are stable enough that adding a
+5th jurisdiction is a single-file change.
+
+For background on where this slots into the broader Axiom auto-update
+layer, see the design conversation in the architecture notes (Pipelines
+A/B/C).

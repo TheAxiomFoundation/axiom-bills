@@ -1,0 +1,267 @@
+"""Federal bill scraper (Congress.gov API).
+
+Docs: https://api.congress.gov/
+
+Auth: free API key at https://api.congress.gov/sign-up/. The key goes in
+the CONGRESS_API_KEY env var. Generous rate limits (5000/hour).
+
+We pull bills + actions for the current Congress. Bill text versions are
+recorded as references (URL + format) but not downloaded here — text
+fetch is a separate pipeline stage that runs only on status-changing
+events.
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from axiom_bills._common.base import BillScraper
+from axiom_bills._common.models import (
+    Bill,
+    BillAction,
+    BillVersion,
+    Chamber,
+    ScrapeResult,
+    Session,
+    Sponsor,
+)
+from axiom_bills._common.status import match_first
+
+from .status import PATTERNS
+
+API_ROOT = "https://api.congress.gov/v3"
+
+# Bill type codes Congress.gov uses → our chamber. Joint resolutions are
+# either-chamber but originate from one; for the prototype we collapse
+# them into the originating chamber's bucket.
+TYPE_CHAMBER: dict[str, Chamber] = {
+    "hr": Chamber.LOWER,    # House bill
+    "s":  Chamber.UPPER,    # Senate bill
+    "hjres": Chamber.LOWER,
+    "sjres": Chamber.UPPER,
+    "hconres": Chamber.LOWER,
+    "sconres": Chamber.UPPER,
+    "hres": Chamber.LOWER,
+    "sres": Chamber.UPPER,
+}
+
+# Display formatting: 'hr' + '1234' → 'H.R.1234'
+TYPE_DISPLAY: dict[str, str] = {
+    "hr": "H.R.", "s": "S.",
+    "hjres": "H.J.Res.", "sjres": "S.J.Res.",
+    "hconres": "H.Con.Res.", "sconres": "S.Con.Res.",
+    "hres": "H.Res.", "sres": "S.Res.",
+}
+
+ET = ZoneInfo("America/New_York")
+
+
+def _action_text_chamber(text: str) -> Chamber | None:
+    lo = text.lower()
+    if "house" in lo:
+        return Chamber.LOWER
+    if "senate" in lo:
+        return Chamber.UPPER
+    if "president" in lo:
+        return Chamber.EXECUTIVE
+    return None
+
+
+def _parse_action_datetime(action: dict) -> datetime:
+    """Congress.gov returns actionDate (always) and actionTime (sometimes)."""
+    date_str = action["actionDate"]
+    time_str = action.get("actionTime")
+    if time_str:
+        iso = f"{date_str}T{time_str}"
+    else:
+        iso = f"{date_str}T00:00:00"
+    return datetime.fromisoformat(iso).replace(tzinfo=ET)
+
+
+class FederalScraper(BillScraper):
+    jurisdiction = "us"
+    source_name = "Congress.gov"
+    min_interval_per_host = 0.2  # 5000/hour budget — we can go fast
+
+    def __init__(self, *, congress: int | None = None, limit: int | None = None) -> None:
+        super().__init__(limit=limit)
+        api_key = os.environ.get("CONGRESS_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "CONGRESS_API_KEY not set. Get a free key at "
+                "https://api.congress.gov/sign-up/"
+            )
+        self.api_key = api_key
+        self.congress = congress or _current_congress()
+
+    def scrape(self) -> ScrapeResult:
+        session = Session(
+            name=f"{self.congress}th Congress",
+            is_current=True,
+        )
+        bills: list[Bill] = []
+
+        for stub in self._list_bills():
+            full = self._fetch_bill(stub)
+            if full is None:
+                continue
+            bills.append(full)
+            if self.limit is not None and len(bills) >= self.limit:
+                break
+
+        return ScrapeResult(
+            jurisdiction=self.jurisdiction,
+            session=session,
+            bills=bills,
+        )
+
+    def _list_bills(self):
+        """Paginate the recent-bills endpoint for the active Congress.
+
+        We sort by updateDate desc so a smoke run with --limit yields the
+        most-active bills (best signal for an end-to-end demo).
+        """
+        offset = 0
+        page_size = 250
+        while True:
+            url = f"{API_ROOT}/bill/{self.congress}"
+            params = {
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": page_size,
+                "offset": offset,
+                "sort": "updateDate+desc",
+            }
+            payload = self.http.get_json(url, params=params)
+            stubs = payload.get("bills", [])
+            if not stubs:
+                return
+            for stub in stubs:
+                yield stub
+            offset += page_size
+            if self.limit is not None and offset >= self.limit:
+                return
+            if not payload.get("pagination", {}).get("next"):
+                return
+
+    def _fetch_bill(self, stub: dict) -> Bill | None:
+        bill_type = stub["type"].lower()
+        number = stub["number"]
+        chamber = TYPE_CHAMBER.get(bill_type)
+        if chamber is None:
+            return None
+
+        url = f"{API_ROOT}/bill/{self.congress}/{bill_type}/{number}"
+        try:
+            detail = self.http.get_json(url, params={"api_key": self.api_key, "format": "json"})
+        except Exception:
+            return None
+        body = detail.get("bill", {})
+
+        actions = list(self._fetch_actions(bill_type, number))
+        versions = list(self._fetch_text_versions(bill_type, number))
+
+        sponsors = [
+            Sponsor(
+                name=s.get("fullName") or s.get("name") or "Unknown",
+                role="primary",
+                party=s.get("party"),
+                district=s.get("district") if "district" in s else s.get("state"),
+            )
+            for s in body.get("sponsors", [])
+        ]
+
+        return Bill(
+            jurisdiction=self.jurisdiction,
+            session_name=f"{self.congress}th Congress",
+            chamber=chamber,
+            number=f"{TYPE_DISPLAY[bill_type]}{number}",
+            title=body.get("title"),
+            summary=_first_summary(body),
+            subjects=_subjects(body),
+            sponsors=sponsors,
+            source_url=f"https://www.congress.gov/bill/{self.congress}th-congress/"
+                       f"{_url_slug(bill_type)}/{number}",
+            actions=actions,
+            versions=versions,
+        )
+
+    def _fetch_actions(self, bill_type: str, number: int):
+        url = f"{API_ROOT}/bill/{self.congress}/{bill_type}/{number}/actions"
+        payload = self.http.get_json(
+            url, params={"api_key": self.api_key, "format": "json", "limit": 250}
+        )
+        for action in payload.get("actions", []):
+            text = action.get("text", "").strip()
+            if not text:
+                continue
+            yield BillAction(
+                occurred_at=_parse_action_datetime(action),
+                chamber=_action_text_chamber(text),
+                action_text=text,
+                normalized_status=match_first(text, PATTERNS),
+            )
+
+    def _fetch_text_versions(self, bill_type: str, number: int):
+        url = f"{API_ROOT}/bill/{self.congress}/{bill_type}/{number}/text"
+        try:
+            payload = self.http.get_json(
+                url, params={"api_key": self.api_key, "format": "json"}
+            )
+        except Exception:
+            return
+        for version in payload.get("textVersions", []):
+            label = (version.get("type") or "Unknown").strip().lower().replace(" ", "-")
+            for fmt in version.get("formats", []):
+                yield BillVersion(
+                    label=f"{label}-{fmt['type'].lower()}",
+                    source_url=fmt["url"],
+                    format=fmt["type"].lower(),
+                )
+
+
+def _first_summary(body: dict) -> str | None:
+    summaries = body.get("summaries", {})
+    if isinstance(summaries, dict):
+        items = summaries.get("summary") or summaries.get("count")
+    else:
+        items = summaries
+    if isinstance(items, list) and items:
+        return items[0].get("text")
+    return None
+
+
+def _subjects(body: dict) -> list[str]:
+    raw = body.get("subjects", {})
+    if isinstance(raw, dict):
+        legislative = raw.get("legislativeSubjects", []) or []
+        policy = raw.get("policyArea", {})
+        names = [s.get("name") for s in legislative if s.get("name")]
+        if isinstance(policy, dict) and policy.get("name"):
+            names.append(policy["name"])
+        return names
+    return []
+
+
+def _url_slug(bill_type: str) -> str:
+    return {
+        "hr": "house-bill",
+        "s": "senate-bill",
+        "hjres": "house-joint-resolution",
+        "sjres": "senate-joint-resolution",
+        "hconres": "house-concurrent-resolution",
+        "sconres": "senate-concurrent-resolution",
+        "hres": "house-resolution",
+        "sres": "senate-resolution",
+    }.get(bill_type, bill_type)
+
+
+def _current_congress() -> int:
+    """Congress numbering: 119th Congress runs 2025-01-03 → 2027-01-03."""
+    year = datetime.now().year
+    # Congresses are biennial starting 1789. Each spans two years; the
+    # Nth Congress begins Jan 3 of the odd year 1789 + 2*(N-1).
+    base = 1789
+    # Bias so a year like 2026 (mid-119th) returns 119.
+    return ((year - base) // 2) + 1
