@@ -20,6 +20,23 @@ class Chamber(str, Enum):
     EXECUTIVE = "executive"
 
 
+class BillKind(str, Enum):
+    """What a bill is at all.
+
+    Distinct from status (where the bill is in the process). A bill is
+    one kind; Pipeline B's encoding trigger only fires on `substantive`
+    enactments, so reserving a numbered placeholder or naming a post
+    office doesn't burn encoder time.
+    """
+    SUBSTANTIVE    = "substantive"
+    PLACEHOLDER    = "placeholder"
+    CEREMONIAL     = "ceremonial"
+    APPROPRIATIONS = "appropriations"
+    PROCEDURAL     = "procedural"
+    VEHICLE        = "vehicle"
+    UNKNOWN        = "unknown"
+
+
 class NormalizedStatus(str, Enum):
     INTRODUCED = "introduced"
     IN_COMMITTEE = "in_committee"
@@ -93,6 +110,7 @@ class Bill(BaseModel):
     source_url: str
     actions: list[BillAction] = Field(default_factory=list)
     versions: list[BillVersion] = Field(default_factory=list)
+    kind: BillKind = BillKind.SUBSTANTIVE
 
     def derived_status(self) -> tuple[NormalizedStatus, datetime | None]:
         """Pick the highest-ranked normalized status across actions."""

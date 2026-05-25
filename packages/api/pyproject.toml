@@ -8,6 +8,7 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "pydantic>=2.7",
   "httpx>=0.28.1",
+  "axiom-bills-scrapers",
 ]
 
 [build-system]
@@ -16,3 +17,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/axiom_bills_api"]
+
+[tool.uv.sources]
+axiom-bills-scrapers = { path = "../scrapers", editable = true }

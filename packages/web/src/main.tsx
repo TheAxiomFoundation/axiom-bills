@@ -5,7 +5,7 @@ import { App } from "./App";
 import { Home } from "./pages/Home";
 import { JurisdictionPage } from "./pages/JurisdictionPage";
 import { BillPage } from "./pages/BillPage";
-import { RecentPage } from "./pages/RecentPage";
+import { CoveragePage } from "./pages/CoveragePage";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
@@ -14,7 +14,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <Routes>
         <Route element={<App />}>
           <Route path="/" element={<Home />} />
-          <Route path="/recent" element={<RecentPage />} />
+          <Route path="/coverage" element={<CoveragePage />} />
           <Route path="/j/:code" element={<JurisdictionPage />} />
           <Route path="/bills/:billId" element={<BillPage />} />
         </Route>

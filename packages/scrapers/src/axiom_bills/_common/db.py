@@ -22,8 +22,9 @@ from .models import Bill, BillAction, NormalizedStatus, ScrapeResult, STATUS_ORD
 
 def _default_db_path() -> str:
     here = Path(__file__).resolve()
-    # packages/scrapers/src/axiom_bills/_common/db.py → repo root four levels up
-    repo_root = here.parents[4]
+    # packages/scrapers/src/axiom_bills/_common/db.py → repo root is five up
+    # (_common, axiom_bills, src, scrapers, packages, <root>).
+    repo_root = here.parents[5]
     return str(repo_root / "db" / "axiom_bills.sqlite")
 
 
@@ -155,12 +156,13 @@ def _upsert_bill(
                    subjects        = ?,
                    sponsors        = ?,
                    source_url      = ?,
+                   kind            = ?,
                    last_scraped_at = datetime('now')
              WHERE id = ?
             """,
             (
                 bill.title, bill.summary, subjects_json, sponsors_json,
-                bill.source_url, existing["id"],
+                bill.source_url, bill.kind.value, existing["id"],
             ),
         )
         return existing["id"], False
@@ -169,12 +171,13 @@ def _upsert_bill(
     conn.execute(
         """
         INSERT INTO bills (id, jurisdiction, session_id, chamber, number,
-                           title, summary, subjects, sponsors, source_url)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           title, summary, subjects, sponsors, source_url, kind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             new_id, bill.jurisdiction, session_id, bill.chamber.value, bill.number,
             bill.title, bill.summary, subjects_json, sponsors_json, bill.source_url,
+            bill.kind.value,
         ),
     )
     return new_id, True

@@ -28,6 +28,7 @@ from axiom_bills._common.models import (
 )
 from axiom_bills._common.status import match_first
 
+from .kind import classify as classify_kind
 from .status import PATTERNS
 
 API_ROOT = "https://api.congress.gov/v3"
@@ -84,7 +85,8 @@ class FederalScraper(BillScraper):
     source_name = "Congress.gov"
     min_interval_per_host = 0.2  # 5000/hour budget — we can go fast
 
-    def __init__(self, *, congress: int | None = None, limit: int | None = None) -> None:
+    def __init__(self, *, congress: int | None = None, limit: int | None = None,
+                 bill_ids: list[str] | None = None) -> None:
         super().__init__(limit=limit)
         api_key = os.environ.get("CONGRESS_API_KEY")
         if not api_key:
@@ -94,6 +96,11 @@ class FederalScraper(BillScraper):
             )
         self.api_key = api_key
         self.congress = congress or _current_congress()
+        # When set, scrape only these specific bills instead of paginating
+        # the recent-updates feed. Each id is "<type>/<number>" e.g.
+        # "hr/7024". Useful for targeted backfills like pulling a known
+        # tax bill into the index.
+        self.bill_ids = bill_ids
 
     def scrape(self) -> ScrapeResult:
         session = Session(
@@ -102,13 +109,21 @@ class FederalScraper(BillScraper):
         )
         bills: list[Bill] = []
 
-        for stub in self._list_bills():
-            full = self._fetch_bill(stub)
-            if full is None:
-                continue
-            bills.append(full)
-            if self.limit is not None and len(bills) >= self.limit:
-                break
+        if self.bill_ids:
+            for raw in self.bill_ids:
+                bill_type, _, number = raw.partition("/")
+                stub = {"type": bill_type, "number": number}
+                full = self._fetch_bill(stub)
+                if full is not None:
+                    bills.append(full)
+        else:
+            for stub in self._list_bills():
+                full = self._fetch_bill(stub)
+                if full is None:
+                    continue
+                bills.append(full)
+                if self.limit is not None and len(bills) >= self.limit:
+                    break
 
         return ScrapeResult(
             jurisdiction=self.jurisdiction,
@@ -167,17 +182,19 @@ class FederalScraper(BillScraper):
                 name=s.get("fullName") or s.get("name") or "Unknown",
                 role="primary",
                 party=s.get("party"),
-                district=s.get("district") if "district" in s else s.get("state"),
+                # Congress.gov returns district as an int; coerce to str.
+                district=str(s.get("district") or s.get("state") or "") or None,
             )
             for s in body.get("sponsors", [])
         ]
 
+        title = body.get("title")
         return Bill(
             jurisdiction=self.jurisdiction,
             session_name=f"{self.congress}th Congress",
             chamber=chamber,
             number=f"{TYPE_DISPLAY[bill_type]}{number}",
-            title=body.get("title"),
+            title=title,
             summary=_first_summary(body),
             subjects=_subjects(body),
             sponsors=sponsors,
@@ -185,6 +202,7 @@ class FederalScraper(BillScraper):
                        f"{_url_slug(bill_type)}/{number}",
             actions=actions,
             versions=versions,
+            kind=classify_kind(title),
         )
 
     def _fetch_actions(self, bill_type: str, number: int):
@@ -214,11 +232,31 @@ class FederalScraper(BillScraper):
         for version in payload.get("textVersions", []):
             label = (version.get("type") or "Unknown").strip().lower().replace(" ", "-")
             for fmt in version.get("formats", []):
+                normalized = _normalize_format(fmt.get("type", ""))
                 yield BillVersion(
-                    label=f"{label}-{fmt['type'].lower()}",
+                    label=f"{label}-{normalized}",
                     source_url=fmt["url"],
-                    format=fmt["type"].lower(),
+                    format=normalized,
                 )
+
+
+def _normalize_format(raw: str) -> str:
+    """Congress.gov format names → our short keys.
+
+    'Formatted Text' → 'html', 'Formatted XML' → 'xml', etc. Keeps the
+    text-fetcher's prefer_format ordering ('html', 'xml', 'txt') working
+    without it having to know about Congress.gov-specific labels.
+    """
+    lower = (raw or "").strip().lower()
+    if lower in ("formatted text", "html"):
+        return "html"
+    if lower in ("formatted xml", "xml", "united states legislative markup"):
+        return "xml"
+    if lower in ("pdf",):
+        return "pdf"
+    if lower in ("text", "txt", "plain text"):
+        return "txt"
+    return lower or "unknown"
 
 
 def _first_summary(body: dict) -> str | None:

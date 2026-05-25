@@ -4,7 +4,10 @@ DB := db/axiom_bills.sqlite
 
 migrate:
 	mkdir -p db
-	sqlite3 $(DB) < db/migrations/001_init.sql
+	@for f in db/migrations/*.sql; do \
+	  echo "Applying $$f"; \
+	  sqlite3 $(DB) < $$f; \
+	done
 	@echo "Migrated $(DB)"
 
 reset-db:
@@ -21,7 +24,7 @@ scrape-ny:
 	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli scrape --jurisdiction us-ny --limit 50
 
 api:
-	cd packages/api && .venv/bin/python -m uvicorn axiom_bills_api.main:app --reload --port 8000
+	cd packages/api && .venv/bin/python -m uvicorn axiom_bills_api.main:app --reload --port 8001
 
 web:
 	cd packages/web && npm run dev

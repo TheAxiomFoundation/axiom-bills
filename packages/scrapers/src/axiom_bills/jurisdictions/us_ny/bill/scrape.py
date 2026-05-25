@@ -27,6 +27,7 @@ from axiom_bills._common.models import (
 )
 from axiom_bills._common.status import match_first
 
+from .kind import classify as classify_kind
 from .status import PATTERNS
 
 API_ROOT = "https://legislation.nysenate.gov/api/3"
@@ -120,12 +121,13 @@ class NewYorkScraper(BillScraper):
         sponsors = self._sponsors(result)
         versions = self._versions(result, print_no)
 
+        title = result.get("title")
         return Bill(
             jurisdiction=self.jurisdiction,
             session_name=f"{self.session_year}-{self.session_year + 1} Regular Session",
             chamber=_chamber_for_print_no(print_no),
             number=print_no,
-            title=result.get("title"),
+            title=title,
             summary=result.get("summary"),
             subjects=_subjects(result),
             sponsors=sponsors,
@@ -133,6 +135,7 @@ class NewYorkScraper(BillScraper):
                        f"{self.session_year}/{print_no}",
             actions=actions,
             versions=versions,
+            kind=classify_kind(title),
         )
 
     def _actions(self, result: dict):
