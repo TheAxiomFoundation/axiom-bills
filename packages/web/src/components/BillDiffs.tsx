@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type BillDiffSection, type BillDiffs as TDiffs, type RuleVariant } from "../lib/api";
+import { clean, parseScalarNote } from "../lib/variant-text";
+import { sliceRulesBySource } from "../lib/yaml-slice";
+import { BeforeAfter } from "./BeforeAfter";
 
 export function BillDiffs({ billId }: { billId: string }) {
   const [data, setData] = useState<TDiffs | null>(null);
@@ -233,7 +236,7 @@ function RuleSpecPanel({ section, variants }: {
         <dt>Matches</dt><dd><code>{enc.citation}</code></dd>
       </dl>
       {variant ? (
-        <RuleSpecVariantTabs variant={variant} />
+        <RuleSpecVariantTabs variant={variant} sectionCitation={section.citation} />
       ) : (
         <p className="rulespec-hint">
           If this bill is enacted, Pipeline B will re-run the encoder
@@ -244,9 +247,22 @@ function RuleSpecPanel({ section, variants }: {
   );
 }
 
-function RuleSpecVariantTabs({ variant }: { variant: RuleVariant }) {
+function RuleSpecVariantTabs({ variant, sectionCitation }: {
+  variant: RuleVariant;
+  sectionCitation: string;
+}) {
   const [tab, setTab] = useState<"current" | "enacted">("current");
+  const [showFull, setShowFull] = useState(false);
   const hasPatched = !!variant.patched_yaml;
+
+  const baseline = variant.baseline_yaml ?? "";
+  const patched = variant.patched_yaml ?? "";
+  const baselineSliced = baseline ? sliceRulesBySource(baseline, sectionCitation) : null;
+  const patchedSliced = patched ? sliceRulesBySource(patched, sectionCitation) : null;
+  const noRuleGroundsHere = baselineSliced?.fallback ?? false;
+  const sliceSummary = baselineSliced && baselineSliced.shown < baselineSliced.total
+    ? `Showing ${baselineSliced.shown} of ${baselineSliced.total} rules — filtered to ones whose source overlaps with ${sectionCitation}.`
+    : null;
   return (
     <div className="rs-variant">
       <div className="rs-variant-tabs" role="tablist">
@@ -268,24 +284,67 @@ function RuleSpecVariantTabs({ variant }: { variant: RuleVariant }) {
           </span>
         </button>
       </div>
-      {tab === "current" ? (
-        <pre className="rs-variant-yaml">{variant.baseline_yaml ?? "(baseline YAML not on disk)"}</pre>
-      ) : hasPatched ? (
-        <pre className="rs-variant-yaml">{variant.patched_yaml}</pre>
-      ) : (
-        <div className="rs-variant-todo">
-          <p>{
-            variant.tier === "structural"
-              ? "Structural amendment — needs human or LLM-assisted re-encoding before a patched YAML can be produced."
-              : variant.tier === "list"
-              ? "Bill adds a list item — needs a human to author the new rule branch."
-              : "No-op for this rule (no atom matched the bill's needle)."
-          }</p>
-          {variant.note && variant.tier !== "substitution" && (
-            <p className="rs-variant-note">{variant.note.replace(/\s+/g, " ")}</p>
-          )}
-        </div>
+      {noRuleGroundsHere && !showFull && (
+        <p className="rs-variant-slice rs-variant-slice--fallback">
+          No rule in this file grounds in <code>{sectionCitation}</code> — the
+          file is encoded against §{(baselineSliced?.total ?? 0)} other
+          subsections of this statute. The bill's variant exists at the
+          file level only.{" "}
+          <button className="rs-variant-slice-toggle"
+                  onClick={() => setShowFull(true)}>
+            show full file
+          </button>
+        </p>
       )}
+      {sliceSummary && !noRuleGroundsHere && (
+        <p className="rs-variant-slice">
+          {sliceSummary}{" "}
+          <button className="rs-variant-slice-toggle"
+                  onClick={() => setShowFull((x) => !x)}>
+            {showFull ? "show only affected rules" : "show full file"}
+          </button>
+        </p>
+      )}
+      {noRuleGroundsHere && !showFull ? null : tab === "current" ? (
+        <pre className="rs-variant-yaml">
+          {baselineSliced
+            ? (showFull ? baseline : baselineSliced.filtered)
+            : "(baseline YAML not on disk)"}
+        </pre>
+      ) : hasPatched ? (
+        <pre className="rs-variant-yaml">
+          {patchedSliced ? (showFull ? patched : patchedSliced.filtered) : patched}
+        </pre>
+      ) : (
+        <VariantTodo variant={variant} />
+      )}
+    </div>
+  );
+}
+
+/** "If enacted" tab content when there's no patched_yaml yet — i.e. tier
+ * is structural / list / no_op. Parses the reencoder note when possible
+ * into a clean strike/insert block, otherwise renders a short caption. */
+function VariantTodo({ variant }: { variant: RuleVariant }) {
+  const parsed = variant.note ? parseScalarNote(variant.note) : null;
+  const caption =
+    variant.tier === "structural"
+      ? "Structural amendment — needs human or LLM-assisted re-encoding before a patched YAML can be produced."
+      : variant.tier === "list"
+      ? "Bill adds a list item — needs a human to author the new rule branch."
+      : "No-op for this rule (no atom matched the bill's needle).";
+  return (
+    <div className="rs-variant-todo">
+      <p className="rs-variant-caption">{caption}</p>
+      {parsed ? (
+        <BeforeAfter
+          kind={parsed.kind}
+          before={parsed.needle}
+          after={parsed.payload}
+        />
+      ) : variant.note && variant.tier !== "substitution" ? (
+        <p className="rs-variant-note">{clean(variant.note)}</p>
+      ) : null}
     </div>
   );
 }

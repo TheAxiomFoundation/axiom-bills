@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type BillDetail } from "../lib/api";
 import { BillDiffs } from "../components/BillDiffs";
-import { BillVariants } from "../components/BillVariants";
 import { StatusBadge } from "../components/StatusBadge";
 import { fmtDate, KIND_LABEL } from "../lib/format";
 
@@ -194,8 +193,6 @@ export function BillPage() {
       ) : null}
 
       <BillDiffs billId={bill.id} />
-
-      <BillVariants billId={bill.id} />
 
       {bill.texts.length > 0 && (
         <BillTextSection

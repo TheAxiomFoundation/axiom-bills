@@ -1512,6 +1512,19 @@ table.bills td a:hover { color: var(--color-accent); }
 .rs-variant-tier--list         { background: #fde9b8; color: #6b4d10; }
 .rs-variant-tier--structural   { background: #f5d0c5; color: #7a2e16; }
 .rs-variant-tier--no_op        { background: #e5e5e0; color: #555; }
+.rs-variant-slice {
+  background: #fff; border: 1px solid #d8d4c8; border-top: none;
+  padding: 6px 10px; margin: 0; font-size: 11.5px; color: #555;
+  border-bottom: none;
+}
+.rs-variant-slice--fallback {
+  background: #fdfcf7; padding: 10px 12px; line-height: 1.5;
+  border-bottom: 1px solid #d8d4c8;
+}
+.rs-variant-slice-toggle {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: #92400e; text-decoration: underline; font-size: 11.5px;
+}
 .rs-variant-yaml {
   background: #fff; border: 1px solid #d8d4c8; border-top: none;
   padding: 10px; margin: 0; font-size: 11px; line-height: 1.4;
@@ -1520,9 +1533,12 @@ table.bills td a:hover { color: var(--color-accent); }
 }
 .rs-variant-todo {
   background: #fdfcf7; border: 1px solid #d8d4c8; border-top: none;
-  padding: 10px 12px; font-size: 12px; color: #555;
+  padding: 10px 12px;
 }
-.rs-variant-todo p { margin: 0 0 6px; line-height: 1.5; }
+.rs-variant-caption {
+  margin: 0 0 10px; font-size: 12px; color: #555; line-height: 1.5;
+}
+.rs-variant-todo .ba { margin-top: 0; }
 .rs-variant-note {
   font-family: "SF Mono", monospace; font-size: 11px; color: #6b4d10;
 }

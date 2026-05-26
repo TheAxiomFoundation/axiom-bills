@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type RuleVariant, type VariantTier } from "../lib/api";
+import { clean, parseScalarNote } from "../lib/variant-text";
+import { BeforeAfter } from "./BeforeAfter";
 
 const TIER_LABEL: Record<VariantTier, string> = {
   substitution: "auto-patched",
@@ -61,20 +63,6 @@ export function BillVariants({ billId }: { billId: string }) {
   );
 }
 
-/** Replace runs of whitespace with single spaces. */
-function clean(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
-}
-
-/** Parse the reencoder's "needle=... payload=..." note into structured halves. */
-function parseScalarNote(note: string): { kind: string; needle: string; payload: string } | null {
-  const m = note.match(
-    /^Op (\S+) needle\/payload not a recognized scalar \(needle=(['"])(.*?)\2, payload=(['"])(.*?)\4\)\.?$/s,
-  );
-  if (!m) return null;
-  return { kind: m[1], needle: m[3], payload: m[5] };
-}
-
 function VariantRow({ v }: { v: RuleVariant }) {
   const [open, setOpen] = useState(false);
   const parsed = v.note ? parseScalarNote(v.note) : null;
@@ -99,7 +87,7 @@ function VariantRow({ v }: { v: RuleVariant }) {
         </p>
       )}
       {parsed ? (
-        <BeforeAfterBlock
+        <BeforeAfter
           kind={parsed.kind}
           before={parsed.needle}
           after={parsed.payload}
@@ -120,26 +108,6 @@ function VariantRow({ v }: { v: RuleVariant }) {
         </>
       )}
     </li>
-  );
-}
-
-function BeforeAfterBlock({ kind, before, after }: {
-  kind: string; before: string; after: string;
-}) {
-  return (
-    <div className="ba">
-      <div className="ba-kind">{kind}</div>
-      <div className="ba-pair">
-        <div className="ba-side ba-side--before">
-          <span className="ba-label">strike</span>
-          <pre>{clean(before)}</pre>
-        </div>
-        <div className="ba-side ba-side--after">
-          <span className="ba-label">insert</span>
-          <pre>{after.trim() ? clean(after) : <em>(removed)</em>}</pre>
-        </div>
-      </div>
-    </div>
   );
 }
 
