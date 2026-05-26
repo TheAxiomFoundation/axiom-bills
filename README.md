@@ -56,6 +56,46 @@ make web    # http://127.0.0.1:5180
 You can also open `db/axiom_bills.sqlite` in any SQLite browser to poke
 at the data directly.
 
+## Deploy (Supabase + Vercel)
+
+End state: the frontend at `packages/web/` reads directly from a
+Supabase Postgres project; no API service runs in production. Diffs
+are precomputed and stored in `bills.bills.diffs` (JSONB).
+
+```bash
+# 1. Create a Supabase project (call it axiom-bills). Apply migrations:
+#    Studio → SQL Editor → paste supabase/migrations/*.sql, run.
+#    Then in API settings, add `bills` to "Exposed schemas".
+
+# 2. From the project's Settings → API page, grab:
+#      Project URL              → SUPABASE_URL
+#      anon public key          → SUPABASE_ANON_KEY (frontend)
+#      service_role secret key  → SUPABASE_SERVICE_KEY (sync only)
+
+# 3. Push local SQLite → Supabase (idempotent; safe to re-run):
+export SUPABASE_URL=https://<project>.supabase.co
+export SUPABASE_SERVICE_KEY=eyJ...           # service_role
+cd packages/scrapers
+.venv/bin/python -m axiom_bills.cli precompute-diffs   # fills bills.diffs
+.venv/bin/python -m axiom_bills.cli sync-supabase      # uploads to PG
+
+# 4. Frontend env:
+cd ../web
+cp .env.example .env.local
+#   VITE_SUPABASE_URL=...     # same URL
+#   VITE_SUPABASE_ANON_KEY=...# anon key
+npm run dev                                  # http://127.0.0.1:5180
+
+# 5. Vercel:
+#    - New project pointing at packages/web/
+#    - vercel.json (already committed) declares the Vite framework
+#    - Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in env vars
+#    - Push to main → Vercel deploys automatically
+```
+
+The FastAPI service in `packages/api/` is kept for local development
+convenience (the dev proxy was removed). Production no longer runs it.
+
 ## How a scrape works
 
 ```

@@ -17,7 +17,10 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from .models import Bill, BillAction, NormalizedStatus, ScrapeResult, STATUS_ORDER
+from typing import Iterator
+from datetime import datetime
+
+from .models import Bill, BillAction, NormalizedStatus, ScrapeResult, Session, STATUS_ORDER
 
 
 def _default_db_path() -> str:
@@ -57,6 +60,89 @@ def _fingerprint(bill_id: str, action: BillAction) -> str:
     h.update(action.occurred_at.isoformat().encode())
     h.update(action.action_text.encode())
     return h.hexdigest()
+
+
+def write_streaming(jurisdiction: str, session: Session, bills_iter: Iterator[Bill],
+                    db_path: str = DEFAULT_DB) -> dict[str, int]:
+    """Commit each bill in its own transaction as it arrives.
+
+    Crash-safe: a network failure on bill 412 doesn't lose bills 1..411.
+    Used by the federal scraper so routine refresh runs make incremental
+    progress instead of waiting for a single all-or-nothing batch.
+    """
+    counts = {"bills_seen": 0, "bills_new": 0, "actions_new": 0}
+    run_id = _new_id()
+
+    # Session upsert + scrape_run open in their own transaction.
+    with connect(db_path) as conn:
+        session_id = _upsert_session(
+            conn,
+            ScrapeResult(jurisdiction=jurisdiction, session=session, bills=[]),
+        )
+        conn.execute(
+            "INSERT INTO scrape_runs (id, jurisdiction) VALUES (?, ?)",
+            (run_id, jurisdiction),
+        )
+
+    for bill in bills_iter:
+        with connect(db_path) as conn:
+            bill_id, is_new = _upsert_bill(conn, bill, session_id)
+            if is_new:
+                counts["bills_new"] += 1
+            counts["actions_new"] += _insert_actions(conn, bill_id, bill.actions)
+            _upsert_versions(conn, bill_id, bill.versions)
+            _refresh_current_status(conn, bill_id)
+            counts["bills_seen"] += 1
+            # Periodically flush running totals onto scrape_runs so an
+            # observer (or interrupted shell) can see progress mid-run.
+            if counts["bills_seen"] % 25 == 0:
+                conn.execute(
+                    """
+                    UPDATE scrape_runs
+                       SET bills_seen=?, bills_new=?, actions_new=?
+                     WHERE id=?
+                    """,
+                    (counts["bills_seen"], counts["bills_new"],
+                     counts["actions_new"], run_id),
+                )
+
+    # Final flush + finished_at stamp.
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE scrape_runs
+               SET finished_at=datetime('now'),
+                   bills_seen=?, bills_new=?, actions_new=?
+             WHERE id=?
+            """,
+            (counts["bills_seen"], counts["bills_new"], counts["actions_new"], run_id),
+        )
+    return counts
+
+
+def last_successful_scrape(jurisdiction: str,
+                           db_path: str = DEFAULT_DB) -> datetime | None:
+    """Return the started_at of the most-recent finished scrape, if any.
+
+    Used as the since-cursor by the federal scraper so we stop paginating
+    once Congress.gov returns bills older than our last touch.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT started_at FROM scrape_runs
+             WHERE jurisdiction=? AND finished_at IS NOT NULL AND error IS NULL
+             ORDER BY started_at DESC LIMIT 1
+            """,
+            (jurisdiction,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return datetime.fromisoformat(row["started_at"])
 
 
 def write(result: ScrapeResult, db_path: str = DEFAULT_DB) -> dict[str, int]:
