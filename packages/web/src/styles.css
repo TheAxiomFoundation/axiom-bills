@@ -1487,12 +1487,58 @@ table.bills td a:hover { color: var(--color-accent); }
   white-space: nowrap;
 }
 
-/* ── Pipeline B variants ──────────────────────────────────── */
-.variants { margin-top: 40px; }
+/* ── RuleSpec variant tabs (inside the diff side panel) ──── */
+.rs-variant { margin-top: 12px; }
+.rs-variant-tabs {
+  display: flex; gap: 2px; border-bottom: 1px solid #d8d4c8;
+  margin-bottom: 0;
+}
+.rs-variant-tab {
+  background: #f5f4ef; border: 1px solid #d8d4c8; border-bottom: none;
+  padding: 5px 10px; font-size: 11.5px; font-weight: 600;
+  cursor: pointer; color: #555; border-radius: 3px 3px 0 0;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.rs-variant-tab.on {
+  background: #fff; color: #1c1917;
+  border-bottom: 1px solid #fff; margin-bottom: -1px;
+}
+.rs-variant-tier {
+  display: inline-block; padding: 0 6px; border-radius: 8px;
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em;
+  font-weight: 700;
+}
+.rs-variant-tier--substitution { background: #d1e7d1; color: #1b4d1b; }
+.rs-variant-tier--list         { background: #fde9b8; color: #6b4d10; }
+.rs-variant-tier--structural   { background: #f5d0c5; color: #7a2e16; }
+.rs-variant-tier--no_op        { background: #e5e5e0; color: #555; }
+.rs-variant-yaml {
+  background: #fff; border: 1px solid #d8d4c8; border-top: none;
+  padding: 10px; margin: 0; font-size: 11px; line-height: 1.4;
+  max-height: 320px; overflow: auto;
+  font-family: "SF Mono", monospace; color: #1c1917;
+}
+.rs-variant-todo {
+  background: #fdfcf7; border: 1px solid #d8d4c8; border-top: none;
+  padding: 10px 12px; font-size: 12px; color: #555;
+}
+.rs-variant-todo p { margin: 0 0 6px; line-height: 1.5; }
+.rs-variant-note {
+  font-family: "SF Mono", monospace; font-size: 11px; color: #6b4d10;
+}
+
+/* ── Pipeline B variants (under the bill, summary list) ───── */
+.variants { margin-top: 48px; }
+.variants-header { margin-bottom: 16px; }
+.variants-header h3 { margin: 0 0 4px; }
+.variants-tagline {
+  margin: 0; font-size: 13px; color: #555;
+}
 .variant-group { margin-top: 24px; }
 .variant-group-header {
-  display: flex; align-items: baseline; gap: 12px;
-  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 6px; margin-bottom: 8px;
+  border-bottom: 1px solid #e5e5e0;
 }
 .tier-pill {
   display: inline-block; padding: 2px 10px; border-radius: 3px;
@@ -1503,28 +1549,35 @@ table.bills td a:hover { color: var(--color-accent); }
 .tier-pill--list         { background: #fde9b8; color: #6b4d10; }
 .tier-pill--structural   { background: #f5d0c5; color: #7a2e16; }
 .tier-pill--no_op        { background: #e5e5e0; color: #555; }
+.variant-group-count {
+  font-family: "SF Mono", monospace; font-size: 12px; color: #777;
+  background: #f5f4ef; padding: 1px 7px; border-radius: 10px;
+}
 .variant-group-desc {
-  font-size: 13px; color: #555; flex: 1;
+  font-size: 12px; color: #777;
 }
 .variant-list { list-style: none; padding: 0; margin: 0; }
 .variant-row {
-  border: 1px solid #d8d4c8; background: #fdfcf7; padding: 12px 14px;
-  margin-bottom: 6px;
+  border: 1px solid #e5e5e0; background: #fdfcf7; padding: 10px 12px;
+  margin-bottom: 6px; border-radius: 3px;
 }
-.variant-row-header {
-  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+.variant-row-top {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
 }
 .variant-file {
-  font-family: "SF Mono", monospace; font-size: 13px; color: #1c1917;
+  font-family: "SF Mono", monospace; font-size: 12.5px; color: #1c1917;
+  font-weight: 600;
 }
 .variant-encoding-link {
   color: #92400e; text-decoration: none; font-size: 12px;
 }
+.variant-encoding-link:hover { text-decoration: underline; }
 .variant-rules {
-  font-size: 12px; color: #555; font-style: italic;
+  margin: 4px 0 0; font-size: 11.5px; color: #777;
+  font-family: "SF Mono", monospace;
 }
 .variant-effective {
-  margin-left: auto; font-size: 12px; color: #777;
+  margin-left: auto; font-size: 11.5px; color: #777;
   font-family: "SF Mono", monospace;
 }
 .variant-diff-summary {
@@ -1532,12 +1585,42 @@ table.bills td a:hover { color: var(--color-accent); }
   font-family: "SF Mono", monospace;
 }
 .variant-note {
-  margin: 6px 0 0; font-size: 12px; color: #6b4d10;
+  margin: 8px 0 0; font-size: 12.5px; color: #444; line-height: 1.5;
 }
 .variant-toggle {
   margin-top: 8px; font-size: 12px; background: none; border: none;
   color: #92400e; cursor: pointer; padding: 0; text-decoration: underline;
 }
+
+/* before / after block for structural ops we couldn't auto-patch */
+.ba { margin-top: 10px; }
+.ba-kind {
+  display: inline-block;
+  font-family: "SF Mono", monospace; font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: #777; margin-bottom: 6px;
+}
+.ba-pair {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.ba-side {
+  background: #fff; border: 1px solid #e5e5e0; border-radius: 3px;
+  padding: 8px 10px;
+}
+.ba-side--before { border-left: 3px solid #c25a3f; }
+.ba-side--after  { border-left: 3px solid #4d8c4a; }
+.ba-label {
+  display: block;
+  font-family: "SF Mono", monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: #777; margin-bottom: 4px;
+}
+.ba-side pre {
+  margin: 0; font-family: Georgia, serif; font-size: 12.5px;
+  line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  color: #1c1917;
+}
+
 .yaml-diff {
   display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
   margin-top: 10px;

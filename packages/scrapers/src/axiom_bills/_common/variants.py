@@ -151,7 +151,9 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
         _upsert_variant(
             conn, bill_id, encoding_id, file_path,
             tier=result.tier, patched_rule_names=result.patched_rules,
-            baseline_yaml=baseline_yaml if result.tier == Tier.SUBSTITUTION else None,
+            # Always store the baseline — the bill page wants to render a
+            # "current" tab for every variant, not just auto-patchable ones.
+            baseline_yaml=baseline_yaml,
             patched_yaml=result.patched_yaml if result.tier == Tier.SUBSTITUTION else None,
             diff_summary=result.diff_summary or None,
             note=result.note or None,

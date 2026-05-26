@@ -3,20 +3,16 @@ import { api, type RuleVariant, type VariantTier } from "../lib/api";
 
 const TIER_LABEL: Record<VariantTier, string> = {
   substitution: "auto-patched",
-  list:         "needs review · list",
-  structural:   "needs review · structural",
+  list:         "list change",
+  structural:   "structural",
   no_op:        "no-op",
 };
 
-const TIER_DESC: Record<VariantTier, string> = {
-  substitution:
-    "Scalar substitution — atom text + formula version appended. Run microsim with this variant to A/B against current law.",
-  list:
-    "Bill adds a list item (new exception, new category). Mechanical YAML insert but needs a human to author the rule branch.",
-  structural:
-    "Bill rewrites the section (amend-to-read / repeal / redesignate). Needs human or LLM-assisted re-encoding.",
-  no_op:
-    "Bill touches this section but no atom of any rule matched the bill's needle. Baseline unchanged.",
+const TIER_SHORT: Record<VariantTier, string> = {
+  substitution: "atom + formula version appended; ready to A/B",
+  list:         "needs human authoring of a new rule branch",
+  structural:   "needs human or LLM-assisted re-encoding",
+  no_op:        "no atom matched — baseline unchanged",
 };
 
 export function BillVariants({ billId }: { billId: string }) {
@@ -27,8 +23,7 @@ export function BillVariants({ billId }: { billId: string }) {
     api.billVariants(billId).then(setVariants).catch(() => setErr(true));
   }, [billId]);
 
-  if (err || !variants) return null;
-  if (variants.length === 0) return null;
+  if (err || !variants || variants.length === 0) return null;
 
   const grouped: Record<VariantTier, RuleVariant[]> = {
     substitution: [], list: [], structural: [], no_op: [],
@@ -37,24 +32,26 @@ export function BillVariants({ billId }: { billId: string }) {
 
   return (
     <section className="variants">
-      <h3>Pipeline B variants</h3>
-      <p className="hint">
-        Proposed re-encodings of rulespec rules whose grounding this bill
-        would change. Auto-patched variants append a new version row
-        keyed to the bill's effective date — the baseline is preserved
-        so historical computation still works.
-      </p>
+      <header className="variants-header">
+        <h3>Pipeline B variants</h3>
+        <p className="variants-tagline">
+          Rulespec rules whose grounding this bill would change.
+        </p>
+      </header>
 
       {(["substitution", "list", "structural", "no_op"] as VariantTier[])
         .filter((t) => grouped[t].length > 0)
         .map((tier) => (
           <div key={tier} className="variant-group">
-            <header className="variant-group-header">
+            <div className="variant-group-header">
               <span className={`tier-pill tier-pill--${tier}`}>
                 {TIER_LABEL[tier]}
               </span>
-              <span className="variant-group-desc">{TIER_DESC[tier]}</span>
-            </header>
+              <span className="variant-group-count">
+                {grouped[tier].length}
+              </span>
+              <span className="variant-group-desc">{TIER_SHORT[tier]}</span>
+            </div>
             <ul className="variant-list">
               {grouped[tier].map((v) => <VariantRow key={v.id} v={v} />)}
             </ul>
@@ -64,31 +61,55 @@ export function BillVariants({ billId }: { billId: string }) {
   );
 }
 
+/** Replace runs of whitespace with single spaces. */
+function clean(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/** Parse the reencoder's "needle=... payload=..." note into structured halves. */
+function parseScalarNote(note: string): { kind: string; needle: string; payload: string } | null {
+  const m = note.match(
+    /^Op (\S+) needle\/payload not a recognized scalar \(needle=(['"])(.*?)\2, payload=(['"])(.*?)\4\)\.?$/s,
+  );
+  if (!m) return null;
+  return { kind: m[1], needle: m[3], payload: m[5] };
+}
+
 function VariantRow({ v }: { v: RuleVariant }) {
   const [open, setOpen] = useState(false);
+  const parsed = v.note ? parseScalarNote(v.note) : null;
+
   return (
     <li className="variant-row">
-      <header className="variant-row-header">
+      <div className="variant-row-top">
         <code className="variant-file">{v.file_path}</code>
         {v.encoding && (
           <a href={v.encoding.github_url} target="_blank" rel="noreferrer"
              className="variant-encoding-link">
-            {v.encoding.citation} ↗
+            {v.encoding.citation}&nbsp;↗
           </a>
-        )}
-        {v.patched_rule_names.length > 0 && (
-          <span className="variant-rules">
-            {v.patched_rule_names.join(", ")}
-          </span>
         )}
         {v.effective_from && (
           <time className="variant-effective">eff. {v.effective_from}</time>
         )}
-      </header>
-      {v.diff_summary && (
+      </div>
+      {v.patched_rule_names.length > 0 && (
+        <p className="variant-rules">
+          rules · {v.patched_rule_names.join(" · ")}
+        </p>
+      )}
+      {parsed ? (
+        <BeforeAfterBlock
+          kind={parsed.kind}
+          before={parsed.needle}
+          after={parsed.payload}
+        />
+      ) : v.note ? (
+        <p className="variant-note">{clean(v.note)}</p>
+      ) : null}
+      {v.diff_summary && !parsed && (
         <p className="variant-diff-summary">{v.diff_summary}</p>
       )}
-      {v.note && <p className="variant-note">{v.note}</p>}
       {v.baseline_yaml && v.patched_yaml && (
         <>
           <button className="variant-toggle"
@@ -99,6 +120,26 @@ function VariantRow({ v }: { v: RuleVariant }) {
         </>
       )}
     </li>
+  );
+}
+
+function BeforeAfterBlock({ kind, before, after }: {
+  kind: string; before: string; after: string;
+}) {
+  return (
+    <div className="ba">
+      <div className="ba-kind">{kind}</div>
+      <div className="ba-pair">
+        <div className="ba-side ba-side--before">
+          <span className="ba-label">strike</span>
+          <pre>{clean(before)}</pre>
+        </div>
+        <div className="ba-side ba-side--after">
+          <span className="ba-label">insert</span>
+          <pre>{after.trim() ? clean(after) : <em>(removed)</em>}</pre>
+        </div>
+      </div>
+    </div>
   );
 }
 
