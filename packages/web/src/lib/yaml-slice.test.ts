@@ -166,6 +166,34 @@ describe("sliceRulesBySource", () => {
     expect(out.shown).toBe(3);
   });
 
+  it("handles PyYAML safe_dump style (no indent before dash)", () => {
+    // The LLM reencoder emits via PyYAML which puts list items at
+    // column 0 instead of the handwritten 2-space convention. Slicer
+    // must filter these correctly too.
+    const pyDumpStyle = [
+      "format: rulespec/v1",
+      "rules:",
+      "- name: rule_a",
+      "  kind: parameter",
+      "  source: 26 USC 32(b)(1)",
+      "  versions:",
+      "  - effective_from: '2018-01-01'",
+      "    formula: '7.65'",
+      "- name: rule_b",
+      "  kind: derived",
+      "  source: 26 USC 32(c)(1)(E), 32(m)",
+      "  versions:",
+      "  - effective_from: '2018-01-01'",
+      "    formula: identification_satisfied",
+      "",
+    ].join("\n");
+    const out = sliceRulesBySource(pyDumpStyle, "26 USC 32(m)");
+    expect(out.fallback).toBe(false);
+    expect(out.shown).toBe(1);
+    expect(out.filtered).toContain("rule_b");
+    expect(out.filtered).not.toContain("rule_a");
+  });
+
   it("returns input unchanged when there's no `rules:` block", () => {
     const yaml = "format: rulespec/v1\nmodule:\n  summary: hello\n";
     const out = sliceRulesBySource(yaml, "26 USC 32");

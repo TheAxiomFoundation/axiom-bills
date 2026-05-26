@@ -32,7 +32,8 @@ function normalizeSources(raw) {
 }
 
 function sourceOverlaps(block, citation) {
-  const m = block.match(/^ {4}source:\s*(.+)$/m);
+  // Accept 2-space (PyYAML safe_dump) or 4-space (handwritten) indent.
+  const m = block.match(/^ {2,4}source:\s*(.+)$/m);
   if (!m) return false;
   const sources = normalizeSources(m[1]);
   return sources.some((s) => s.startsWith(citation) || citation.startsWith(s));
@@ -48,7 +49,8 @@ function sliceRulesBySource(yamlText, citation) {
 
   const ruleStarts = [];
   for (let i = 0; i < afterRules.length; i++) {
-    if (/^ {2}- name:/.test(afterRules[i])) ruleStarts.push(i);
+    // Both handwritten (2-space) and PyYAML (0-space) conventions.
+    if (/^ {0,2}- name:/.test(afterRules[i])) ruleStarts.push(i);
   }
   if (ruleStarts.length === 0) return { filtered: yamlText, total: 0, shown: 0, fallback: false };
 
@@ -81,7 +83,7 @@ const headers = { apikey: ANON, Authorization: `Bearer ${ANON}`, "Accept-Profile
 
 async function fetchVariants() {
   const r = await fetch(
-    `${SUPABASE_URL}/rest/v1/rule_variants?select=bill_id,file_path,tier,baseline_yaml,axiom_encodings:encoding_id(citation)`,
+    `${SUPABASE_URL}/rest/v1/rule_variants?select=bill_id,file_path,tier,baseline_yaml,patched_yaml,proposed_by,axiom_encodings:encoding_id(citation)`,
     { headers },
   );
   return r.json();
@@ -120,18 +122,25 @@ for (const v of variants) {
   if (matchingSections.length === 0) continue;
 
   for (const section of matchingSections) {
-    const out = sliceRulesBySource(v.baseline_yaml, section.citation);
-    processed += 1;
-    totalShown += out.shown;
-    totalRules += out.total;
-    const pct = out.total > 0 ? ((out.shown / out.total) * 100).toFixed(0) : "—";
-    const tag = `${v.file_path} @ ${section.citation}  ${out.shown}/${out.total} (${pct}%)`;
-    if (out.total === 0) flags.noRules.push(tag);
-    else if (out.fallback) flags.fallback.push(tag);
-    else if (out.shown === out.total && out.total > 3)
-      flags.keptAll.push(tag);
-    else if (out.shown === 0) flags.totalDropped.push(tag);
-    console.log(`  ${tag}`);
+    // Test BOTH baseline (handwritten YAML) and patched (PyYAML
+    // safe_dump from the LLM reencoder) — they have different indent
+    // conventions and the slicer must handle both.
+    for (const [which, yaml] of [
+      ["baseline", v.baseline_yaml],
+      ...(v.patched_yaml ? [["patched", v.patched_yaml]] : []),
+    ]) {
+      const out = sliceRulesBySource(yaml, section.citation);
+      processed += 1;
+      totalShown += out.shown;
+      totalRules += out.total;
+      const pct = out.total > 0 ? ((out.shown / out.total) * 100).toFixed(0) : "—";
+      const tag = `[${which}] ${v.file_path} @ ${section.citation}  ${out.shown}/${out.total} (${pct}%)`;
+      if (out.total === 0) flags.noRules.push(tag);
+      else if (out.fallback) flags.fallback.push(tag);
+      else if (out.shown === out.total && out.total > 3) flags.keptAll.push(tag);
+      else if (out.shown === 0) flags.totalDropped.push(tag);
+      console.log(`  ${tag}`);
+    }
   }
 }
 
