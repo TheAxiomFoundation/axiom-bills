@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   api,
   type BillKind,
@@ -16,6 +16,7 @@ import { fmtDate, KIND_LABEL } from "../lib/format";
 
 export function JurisdictionPage() {
   const { code = "" } = useParams();
+  const navigate = useNavigate();
   const [bills, setBills] = useState<BillRow[] | null>(null);
   const [counts, setCounts] = useState<KindCounts | undefined>();
   const [statusFilter, setStatusFilter] = useState<NormalizedStatus | "">("");
@@ -70,9 +71,27 @@ export function JurisdictionPage() {
             </thead>
             <tbody>
               {bills.map((b) => (
-                <tr key={b.id}>
+                <tr
+                  key={b.id}
+                  className="bill-row"
+                  tabIndex={0}
+                  role="link"
+                  onClick={() => navigate(`/bills/${b.id}`)}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" || ev.key === " ") {
+                      ev.preventDefault();
+                      navigate(`/bills/${b.id}`);
+                    }
+                  }}
+                >
                   <td>
-                    <Link to={`/bills/${b.id}`}>{b.number}</Link>
+                    {/* Keep an inline Link so middle-click / cmd-click /
+                        right-click → open-in-new-tab keep working, and
+                        screen readers still announce the bill number as
+                        a link. */}
+                    <Link to={`/bills/${b.id}`} onClick={(ev) => ev.stopPropagation()}>
+                      {b.number}
+                    </Link>
                   </td>
                   <td className="title-cell">{b.title || <em>untitled</em>}</td>
                   <td>
