@@ -1,17 +1,19 @@
 import { useEffect, useState } from "react";
-import { api, type BillDiffSection, type BillDiffs as TDiffs } from "../lib/api";
+import { api, type BillDiffSection, type BillDiffs as TDiffs, type RuleVariant } from "../lib/api";
+import { clean, parseScalarNote } from "../lib/variant-text";
+import { sliceRulesBySource } from "../lib/yaml-slice";
+import { BeforeAfter } from "./BeforeAfter";
 
 export function BillDiffs({ billId }: { billId: string }) {
   const [data, setData] = useState<TDiffs | null>(null);
+  const [variants, setVariants] = useState<RuleVariant[]>([]);
   const [active, setActive] = useState(0);
   const [err, setErr] = useState(false);
-  // Hook order is contract — keep all useState calls above any early
-  // return. `showAll` is read only after data lands, but it has to be
-  // declared up front so the count of hooks is stable across renders.
   const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     api.billDiffs(billId).then(setData).catch(() => setErr(true));
+    api.billVariants(billId).then(setVariants).catch(() => { /* variants are optional */ });
   }, [billId]);
 
   if (err) return null;
@@ -109,12 +111,15 @@ export function BillDiffs({ billId }: { billId: string }) {
         ))}
       </nav>
 
-      <SectionView section={section} />
+      <SectionView section={section} variants={variants} />
     </section>
   );
 }
 
-function SectionView({ section }: { section: BillDiffSection }) {
+function SectionView({ section, variants }: {
+  section: BillDiffSection;
+  variants: RuleVariant[];
+}) {
   const hasDiff = section.diff.length > 0 && section.applied_ops.length > 0;
 
   return (
@@ -186,46 +191,160 @@ function SectionView({ section }: { section: BillDiffSection }) {
         </div>
 
         <aside className="diff-rail">
-          <RuleSpecPanel section={section} />
+          <RuleSpecPanel section={section} variants={variants} />
         </aside>
       </div>
     </div>
   );
 }
 
-function RuleSpecPanel({ section }: { section: BillDiffSection }) {
+function RuleSpecPanel({ section, variants }: {
+  section: BillDiffSection;
+  variants: RuleVariant[];
+}) {
   const enc = section.encoding;
-  if (enc) {
+  if (!enc) {
     return (
-      <div className="rulespec-panel rulespec-panel--encoded">
+      <div className="rulespec-panel rulespec-panel--missing">
         <p className="rulespec-eyebrow">RuleSpec encoding</p>
-        <h4 className="rulespec-title">
-          <a href={enc.github_url} target="_blank" rel="noreferrer">
-            {enc.file_path}
-          </a>
-        </h4>
-        <dl className="rulespec-meta">
-          <dt>Repo</dt><dd>{enc.repo}</dd>
-          <dt>Kind</dt><dd>{enc.kind}</dd>
-          <dt>Matches</dt><dd><code>{enc.citation}</code></dd>
-        </dl>
+        <p className="rulespec-missing">
+          Not encoded in <code>rulespec-us</code> yet.
+        </p>
         <p className="rulespec-hint">
-          If this bill is enacted, Pipeline B will re-run the encoder
-          against this file.
+          If this bill is enacted, this section will be added to the
+          encoder backlog rather than auto-re-encoded.
         </p>
       </div>
     );
   }
+
+  // Match the bill's variant for this exact encoded file. If one exists,
+  // we can render baseline vs would-be-enacted side-by-side.
+  const variant = variants.find((v) => v.file_path === enc.file_path) ?? null;
+
   return (
-    <div className="rulespec-panel rulespec-panel--missing">
+    <div className="rulespec-panel rulespec-panel--encoded">
       <p className="rulespec-eyebrow">RuleSpec encoding</p>
-      <p className="rulespec-missing">
-        Not encoded in <code>rulespec-us</code> yet.
-      </p>
-      <p className="rulespec-hint">
-        If this bill is enacted, this section will be added to the
-        encoder backlog rather than auto-re-encoded.
-      </p>
+      <h4 className="rulespec-title">
+        <a href={enc.github_url} target="_blank" rel="noreferrer">
+          {enc.file_path}
+        </a>
+      </h4>
+      <dl className="rulespec-meta">
+        <dt>Repo</dt><dd>{enc.repo}</dd>
+        <dt>Kind</dt><dd>{enc.kind}</dd>
+        <dt>Matches</dt><dd><code>{enc.citation}</code></dd>
+      </dl>
+      {variant ? (
+        <RuleSpecVariantTabs variant={variant} sectionCitation={section.citation} />
+      ) : (
+        <p className="rulespec-hint">
+          If this bill is enacted, Pipeline B will re-run the encoder
+          against this file.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function RuleSpecVariantTabs({ variant, sectionCitation }: {
+  variant: RuleVariant;
+  sectionCitation: string;
+}) {
+  const [tab, setTab] = useState<"current" | "enacted">("current");
+  const [showFull, setShowFull] = useState(false);
+  const hasPatched = !!variant.patched_yaml;
+
+  const baseline = variant.baseline_yaml ?? "";
+  const patched = variant.patched_yaml ?? "";
+  const baselineSliced = baseline ? sliceRulesBySource(baseline, sectionCitation) : null;
+  const patchedSliced = patched ? sliceRulesBySource(patched, sectionCitation) : null;
+  const noRuleGroundsHere = baselineSliced?.fallback ?? false;
+  const sliceSummary = baselineSliced && baselineSliced.shown < baselineSliced.total
+    ? `Showing ${baselineSliced.shown} of ${baselineSliced.total} rules — filtered to ones whose source overlaps with ${sectionCitation}.`
+    : null;
+  return (
+    <div className="rs-variant">
+      <div className="rs-variant-tabs" role="tablist">
+        <button
+          role="tab" aria-selected={tab === "current"}
+          className={`rs-variant-tab ${tab === "current" ? "on" : ""}`}
+          onClick={() => setTab("current")}
+        >
+          Current
+        </button>
+        <button
+          role="tab" aria-selected={tab === "enacted"}
+          className={`rs-variant-tab ${tab === "enacted" ? "on" : ""}`}
+          onClick={() => setTab("enacted")}
+        >
+          If enacted
+          <span className={`rs-variant-tier rs-variant-tier--${variant.tier}`}>
+            {variant.tier === "substitution" ? "auto" : variant.tier}
+          </span>
+        </button>
+      </div>
+      {noRuleGroundsHere && !showFull && (
+        <p className="rs-variant-slice rs-variant-slice--fallback">
+          No rule in this file grounds in <code>{sectionCitation}</code> — the
+          file is encoded against §{(baselineSliced?.total ?? 0)} other
+          subsections of this statute. The bill's variant exists at the
+          file level only.{" "}
+          <button className="rs-variant-slice-toggle"
+                  onClick={() => setShowFull(true)}>
+            show full file
+          </button>
+        </p>
+      )}
+      {sliceSummary && !noRuleGroundsHere && (
+        <p className="rs-variant-slice">
+          {sliceSummary}{" "}
+          <button className="rs-variant-slice-toggle"
+                  onClick={() => setShowFull((x) => !x)}>
+            {showFull ? "show only affected rules" : "show full file"}
+          </button>
+        </p>
+      )}
+      {noRuleGroundsHere && !showFull ? null : tab === "current" ? (
+        <pre className="rs-variant-yaml">
+          {baselineSliced
+            ? (showFull ? baseline : baselineSliced.filtered)
+            : "(baseline YAML not on disk)"}
+        </pre>
+      ) : hasPatched ? (
+        <pre className="rs-variant-yaml">
+          {patchedSliced ? (showFull ? patched : patchedSliced.filtered) : patched}
+        </pre>
+      ) : (
+        <VariantTodo variant={variant} />
+      )}
+    </div>
+  );
+}
+
+/** "If enacted" tab content when there's no patched_yaml yet — i.e. tier
+ * is structural / list / no_op. Parses the reencoder note when possible
+ * into a clean strike/insert block, otherwise renders a short caption. */
+function VariantTodo({ variant }: { variant: RuleVariant }) {
+  const parsed = variant.note ? parseScalarNote(variant.note) : null;
+  const caption =
+    variant.tier === "structural"
+      ? "Structural amendment — needs human or LLM-assisted re-encoding before a patched YAML can be produced."
+      : variant.tier === "list"
+      ? "Bill adds a list item — needs a human to author the new rule branch."
+      : "No-op for this rule (no atom matched the bill's needle).";
+  return (
+    <div className="rs-variant-todo">
+      <p className="rs-variant-caption">{caption}</p>
+      {parsed ? (
+        <BeforeAfter
+          kind={parsed.kind}
+          before={parsed.needle}
+          after={parsed.payload}
+        />
+      ) : variant.note && variant.tier !== "substitution" ? (
+        <p className="rs-variant-note">{clean(variant.note)}</p>
+      ) : null}
     </div>
   );
 }

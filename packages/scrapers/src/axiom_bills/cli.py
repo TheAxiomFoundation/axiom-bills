@@ -13,7 +13,13 @@ import sys
 import click
 
 from ._common.base import BillScraper
-from ._common.db import DEFAULT_DB, connect, write
+from ._common.db import (
+    DEFAULT_DB,
+    connect,
+    last_successful_scrape,
+    write,
+    write_streaming,
+)
 from ._common.models import NormalizedStatus, STATUS_ORDER
 from ._common.status import match_first
 from .jurisdictions.us_federal.bill.scrape import FederalScraper
@@ -104,21 +110,37 @@ def scrape(jurisdiction: str, limit: int | None, congress: int | None,
         kwargs["congress"] = congress
     if bill and jurisdiction == "us":
         kwargs["bill_ids"] = list(bill)
+    if jurisdiction == "us" and not bill:
+        # Routine refresh: cap the pagination using the last successful
+        # scrape as a since-cursor. A targeted --bill run skips this so
+        # backfills aren't accidentally clipped.
+        since = last_successful_scrape(jurisdiction)
+        if since is not None:
+            kwargs["since"] = since
+            click.echo(f"Refresh since {since.isoformat()} (set --bill to bypass).")
     scraper = cls(**kwargs)
+
+    if dry_run:
+        bills = list(scraper.bills_iter()) if hasattr(scraper, "bills_iter") \
+                else scraper.scrape().bills
+        scraper.close()
+        click.echo(f"Dry run: {len(bills)} bills (not writing).")
+        return
+
     try:
-        result = scraper.scrape()
+        # Federal scraper streams bills one at a time and we commit per
+        # bill so a network blip can't lose 6500-bill of work. Other
+        # jurisdictions still use the bulk path.
+        if hasattr(scraper, "bills_iter") and hasattr(scraper, "session"):
+            counts = write_streaming(
+                jurisdiction, scraper.session(), scraper.bills_iter()
+            )
+        else:
+            result = scraper.scrape()
+            counts = write(result)
     finally:
         scraper.close()
 
-    click.echo(f"Scraped {len(result.bills)} bills from {jurisdiction}.")
-    if result.notes:
-        click.echo(f"Notes: {result.notes}")
-
-    if dry_run:
-        click.echo("Dry run — not writing.")
-        return
-
-    counts = write(result)
     click.echo(
         f"Wrote: bills_seen={counts['bills_seen']} "
         f"bills_new={counts['bills_new']} actions_new={counts['actions_new']}"
@@ -226,6 +248,46 @@ def fetch_texts(jurisdiction: str, limit: int | None) -> None:
         f"fetched: {counts['fetched']}  "
         f"skipped: {counts['skipped']}"
     )
+
+
+@main.command(name="precompute-diffs")
+@click.option("--jurisdiction", "-j", default=None,
+              help="Limit to one jurisdiction code (e.g. 'us').")
+def precompute_diffs(jurisdiction: str | None) -> None:
+    """Compute the diff JSON payload for every bill and store on the
+    bill row. The frontend reads this directly — no API at runtime."""
+    from ._common.diff_precompute import precompute_all
+    counts = precompute_all(jurisdiction=jurisdiction)
+    click.echo(
+        f"  bills processed: {counts['bills']}\n"
+        f"  with sections:   {counts['with_sections']}\n"
+        f"  with applied ops:{counts['with_ops']}"
+    )
+
+
+@main.command(name="precompute-variants")
+@click.option("--jurisdiction", "-j", default=None)
+def precompute_variants(jurisdiction: str | None) -> None:
+    """Compute rule_variants for every bill whose ops touch an encoding."""
+    from ._common.variants import compute_all
+    totals = compute_all(jurisdiction=jurisdiction)
+    for k, v in sorted(totals.items()):
+        click.echo(f"  {k:<14} {v}")
+
+
+@main.command(name="sync-supabase")
+def sync_supabase() -> None:
+    """Push local SQLite → Supabase Postgres (bills schema).
+
+    Requires SUPABASE_URL and SUPABASE_SERVICE_KEY env vars. The service-
+    role key is the *only* credential allowed to write into the bills
+    schema; the frontend uses the anon key for reads.
+    """
+    from ._common.supabase_sync import sync
+    from ._common.db import DEFAULT_DB
+    counts = sync(DEFAULT_DB)
+    for table, n in counts.items():
+        click.echo(f"  {table:<22} {n}")
 
 
 @main.command(name="fetch-corpus")

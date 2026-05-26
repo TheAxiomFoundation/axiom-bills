@@ -13,7 +13,9 @@ events.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime
+from typing import Iterator
 from zoneinfo import ZoneInfo
 
 from axiom_bills._common.base import BillScraper
@@ -86,7 +88,8 @@ class FederalScraper(BillScraper):
     min_interval_per_host = 0.2  # 5000/hour budget — we can go fast
 
     def __init__(self, *, congress: int | None = None, limit: int | None = None,
-                 bill_ids: list[str] | None = None) -> None:
+                 bill_ids: list[str] | None = None,
+                 since: datetime | None = None) -> None:
         super().__init__(limit=limit)
         api_key = os.environ.get("CONGRESS_API_KEY")
         if not api_key:
@@ -101,41 +104,60 @@ class FederalScraper(BillScraper):
         # "hr/7024". Useful for targeted backfills like pulling a known
         # tax bill into the index.
         self.bill_ids = bill_ids
+        # When set, stop paginating once Congress.gov returns a bill whose
+        # updateDate is older than this cursor. Skips the bulk of the
+        # 6500+-bill Congress on routine refresh runs.
+        self.since = since
+
+    def session(self) -> Session:
+        return Session(name=f"{self.congress}th Congress", is_current=True)
 
     def scrape(self) -> ScrapeResult:
-        session = Session(
-            name=f"{self.congress}th Congress",
-            is_current=True,
-        )
-        bills: list[Bill] = []
+        """Bulk-mode entrypoint (used by tests and one-shot backfills).
 
+        Routine refreshes should iterate `bills_iter()` and commit per bill
+        so a crash mid-scrape doesn't lose everything.
+        """
+        return ScrapeResult(
+            jurisdiction=self.jurisdiction,
+            session=self.session(),
+            bills=list(self.bills_iter()),
+        )
+
+    def bills_iter(self) -> Iterator[Bill]:
+        """Yield bills one at a time. Progress goes to stderr.
+
+        Internal pagination breaks early on the since-cursor so refresh
+        runs don't traverse the entire Congress every time.
+        """
         if self.bill_ids:
             for raw in self.bill_ids:
                 bill_type, _, number = raw.partition("/")
                 stub = {"type": bill_type, "number": number}
                 full = self._fetch_bill(stub)
                 if full is not None:
-                    bills.append(full)
-        else:
-            for stub in self._list_bills():
-                full = self._fetch_bill(stub)
-                if full is None:
-                    continue
-                bills.append(full)
-                if self.limit is not None and len(bills) >= self.limit:
-                    break
+                    print(f"  fetched {full.number}", file=sys.stderr, flush=True)
+                    yield full
+            return
 
-        return ScrapeResult(
-            jurisdiction=self.jurisdiction,
-            session=session,
-            bills=bills,
-        )
+        count = 0
+        for stub in self._list_bills():
+            full = self._fetch_bill(stub)
+            if full is None:
+                continue
+            count += 1
+            print(f"  [{count}] {full.number}", file=sys.stderr, flush=True)
+            yield full
+            if self.limit is not None and count >= self.limit:
+                return
 
     def _list_bills(self):
         """Paginate the recent-bills endpoint for the active Congress.
 
-        We sort by updateDate desc so a smoke run with --limit yields the
-        most-active bills (best signal for an end-to-end demo).
+        Sorted by updateDate desc. If a `since` cursor is set, stop the
+        moment we see a bill older than it — that's the rest of the
+        Congress, unchanged since our last successful refresh, and not
+        worth touching.
         """
         offset = 0
         page_size = 250
@@ -153,6 +175,10 @@ class FederalScraper(BillScraper):
             if not stubs:
                 return
             for stub in stubs:
+                if self.since is not None:
+                    upd = stub.get("updateDate")
+                    if upd and _parse_update_date(upd) < self.since:
+                        return
                 yield stub
             offset += page_size
             if self.limit is not None and offset >= self.limit:
@@ -293,6 +319,22 @@ def _url_slug(bill_type: str) -> str:
         "hres": "house-resolution",
         "sres": "senate-resolution",
     }.get(bill_type, bill_type)
+
+
+def _parse_update_date(s: str) -> datetime:
+    """Congress.gov's updateDate is sometimes 'YYYY-MM-DD', sometimes ISO.
+
+    Returns a naive datetime in local time so it can be compared directly
+    against the naive `started_at` we read out of SQLite (those rows are
+    written by datetime('now') and stored without tz).
+    """
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        dt = datetime.fromisoformat(s + "T00:00:00")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(ET).replace(tzinfo=None)
+    return dt
 
 
 def _current_congress() -> int:
