@@ -172,6 +172,8 @@ export type RuleVariant = {
   diff_summary: string | null;
   note: string | null;
   effective_from: string | null;
+  proposed_by: "auto" | "llm" | null;
+  proposed_model: string | null;
   encoding: {
     repo: string;
     citation: string;
@@ -422,7 +424,7 @@ async function billVariants(id: string): Promise<RuleVariant[]> {
     .from("rule_variants")
     .select(`
       id, file_path, tier, patched_rule_names, baseline_yaml, patched_yaml,
-      diff_summary, note, effective_from,
+      diff_summary, note, effective_from, proposed_by, proposed_model,
       axiom_encodings:encoding_id (repo, citation)
     `)
     .eq("bill_id", id)
@@ -439,6 +441,8 @@ async function billVariants(id: string): Promise<RuleVariant[]> {
     diff_summary: v.diff_summary,
     note: v.note,
     effective_from: v.effective_from,
+    proposed_by: v.proposed_by ?? null,
+    proposed_model: v.proposed_model ?? null,
     encoding: v.axiom_encodings ? {
       repo: v.axiom_encodings.repo,
       citation: v.axiom_encodings.citation,

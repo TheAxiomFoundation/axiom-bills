@@ -265,6 +265,27 @@ def precompute_diffs(jurisdiction: str | None) -> None:
     )
 
 
+@main.command(name="propose-llm-variants")
+@click.option("--jurisdiction", "-j", default=None)
+@click.option("--limit", "-n", type=int, default=None,
+              help="Stop after N successful proposals.")
+@click.option("--dry-run", is_flag=True,
+              help="Call the LLM but don't write proposals to the DB.")
+def propose_llm_variants(jurisdiction: str | None, limit: int | None,
+                         dry_run: bool) -> None:
+    """LLM-assisted Tier 3: draft patched YAML for structural variants.
+
+    Walks every variant where tier is 'list' or 'structural' and
+    patched_yaml is null, calls Claude with the baseline YAML + bill's
+    amendment text, validates the response, and stores it as the
+    proposed re-encoding. Requires ANTHROPIC_API_KEY in env.
+    """
+    from ._common.variants_llm import propose_all
+    counts = propose_all(jurisdiction=jurisdiction, limit=limit, dry_run=dry_run)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<12} {v}")
+
+
 @main.command(name="precompute-variants")
 @click.option("--jurisdiction", "-j", default=None)
 def precompute_variants(jurisdiction: str | None) -> None:

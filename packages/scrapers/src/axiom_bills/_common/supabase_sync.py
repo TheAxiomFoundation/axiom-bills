@@ -226,7 +226,8 @@ def sync(db_path: str) -> dict[str, int]:
             for r in local.execute("""
                 SELECT id, bill_id, encoding_id, file_path, tier,
                        patched_rule_names, baseline_yaml, patched_yaml,
-                       diff_summary, note, effective_from, computed_at
+                       diff_summary, note, effective_from, computed_at,
+                       proposed_by, proposed_model
                   FROM rule_variants
             """):
                 rows.append({
@@ -242,6 +243,8 @@ def sync(db_path: str) -> dict[str, int]:
                     "note": r["note"],
                     "effective_from": r["effective_from"],
                     "computed_at": r["computed_at"],
+                    "proposed_by": r["proposed_by"],
+                    "proposed_model": r["proposed_model"],
                 })
             counts["rule_variants"] = _upsert(
                 client, "rule_variants", rows, on_conflict="id", chunk=200,

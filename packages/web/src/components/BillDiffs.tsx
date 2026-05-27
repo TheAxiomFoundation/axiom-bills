@@ -280,7 +280,11 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
         >
           If enacted
           <span className={`rs-variant-tier rs-variant-tier--${variant.tier}`}>
-            {variant.tier === "substitution" ? "auto" : variant.tier}
+            {variant.proposed_by === "llm"
+              ? "LLM draft"
+              : variant.tier === "substitution"
+              ? "auto"
+              : variant.tier}
           </span>
         </button>
       </div>
@@ -303,6 +307,13 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
                   onClick={() => setShowFull((x) => !x)}>
             {showFull ? "show only affected rules" : "show full file"}
           </button>
+        </p>
+      )}
+      {variant.proposed_by === "llm" && tab === "enacted" && !noRuleGroundsHere && (
+        <p className="rs-variant-llm-attribution">
+          Drafted by <code>{variant.proposed_model ?? "claude"}</code>.
+          Needs human review before merging to rulespec-us — schema-validated
+          but semantics not verified.
         </p>
       )}
       {noRuleGroundsHere && !showFull ? null : tab === "current" ? (

@@ -32,9 +32,14 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
   const preamble = lines.slice(0, rulesLineIdx + 1).join("\n");
   const afterRules = lines.slice(rulesLineIdx + 1);
 
+  // Top-level rule entries start with `- name:`. Two YAML conventions:
+  //   handwritten rulespec: "  - name:" (2-space indent)
+  //   PyYAML safe_dump:     "- name:"   (no indent)
+  // Accept either. Nested `- path:` inside atoms uses 4+-space indent
+  // and starts with "path:", not "name:", so no collision.
   const ruleStarts: number[] = [];
   for (let i = 0; i < afterRules.length; i++) {
-    if (/^ {2}- name:/.test(afterRules[i])) ruleStarts.push(i);
+    if (/^ {0,2}- name:/.test(afterRules[i])) ruleStarts.push(i);
   }
   if (ruleStarts.length === 0) {
     return { filtered: yamlText, total: 0, shown: 0, fallback: false };
@@ -53,16 +58,17 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
     return { filtered: yamlText, total, shown: total, fallback: true };
   }
   return {
-    filtered: preamble + "\n" + kept.join("").trimEnd() + "\n",
+    filtered: preamble + "\n" + kept.join("\n").trimEnd() + "\n",
     total,
     shown: kept.length,
     fallback: false,
   };
 }
 
-/** Does this rule block's `source:` line overlap with the target citation? */
+/** Does this rule block's `source:` line overlap with the target citation?
+ * Accepts either 2-space (PyYAML dump) or 4-space (handwritten) indent. */
 function sourceOverlaps(block: string, citation: string): boolean {
-  const m = block.match(/^ {4}source:\s*(.+)$/m);
+  const m = block.match(/^ {2,4}source:\s*(.+)$/m);
   if (!m) return false;
   const sources = normalizeSources(m[1]);
   return sources.some((s) => s.startsWith(citation) || citation.startsWith(s));
