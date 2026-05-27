@@ -194,6 +194,30 @@ describe("sliceRulesBySource", () => {
     expect(out.filtered).not.toContain("rule_a");
   });
 
+  it("keeps PyYAML safe_dump style valid when multiple rules match", () => {
+    const pyDumpStyle = [
+      "format: rulespec/v1",
+      "rules:",
+      "- name: rule_a",
+      "  kind: parameter",
+      "  source: 26 USC 32(b)(1)",
+      "  versions:",
+      "  - effective_from: '2018-01-01'",
+      "    formula: '7.65'",
+      "- name: rule_b",
+      "  kind: derived",
+      "  source: 26 USC 32(c)(1)(E), 32(m)",
+      "  versions:",
+      "  - effective_from: '2018-01-01'",
+      "    formula: identification_satisfied",
+      "",
+    ].join("\n");
+    const out = sliceRulesBySource(pyDumpStyle, "26 USC 32");
+    expect(out.fallback).toBe(false);
+    expect(out.shown).toBe(2);
+    expect(out.filtered).toContain("formula: '7.65'\n- name: rule_b");
+  });
+
   it("returns input unchanged when there's no `rules:` block", () => {
     const yaml = "format: rulespec/v1\nmodule:\n  summary: hello\n";
     const out = sliceRulesBySource(yaml, "26 USC 32");

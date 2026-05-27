@@ -12,12 +12,13 @@ baseline's rules, must include a version row keyed to the bill's
 effective date. Anything else raises `ProposalRejected` so the
 variant stays at "needs human review" rather than shipping garbage.
 """
+
 from __future__ import annotations
 
 import os
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import yaml
@@ -32,7 +33,7 @@ import yaml
 class LLMProposal:
     baseline_yaml: str
     patched_yaml: str
-    model: str          # the Anthropic model id, for provenance
+    model: str  # the Anthropic model id, for provenance
 
 
 class ProposalRejected(Exception):
@@ -101,8 +102,14 @@ Hard rules:
 """
 
 
-def build_prompt(*, baseline_yaml: str, citation: str, bill_number: str,
-                 bill_op_text: str, effective_from: date) -> str:
+def build_prompt(
+    *,
+    baseline_yaml: str,
+    citation: str,
+    bill_number: str,
+    bill_op_text: str,
+    effective_from: date,
+) -> str:
     """Assemble the user-side prompt. System prompt is separate so the
     model has a stable role; this contains the per-task specifics."""
     return (
@@ -129,7 +136,8 @@ def build_prompt(*, baseline_yaml: str, citation: str, bill_number: str,
 
 
 _FENCE_RE = re.compile(
-    r"```(?:yaml|yml)?\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE,
+    r"```(?:yaml|yml)?\s*\n(.*?)\n```",
+    re.DOTALL | re.IGNORECASE,
 )
 
 
@@ -148,8 +156,9 @@ def parse_response(text: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
-def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
-                      effective_from: date) -> LLMProposal:
+def validate_proposal(
+    proposal_yaml: str, *, baseline_yaml: str, effective_from: date
+) -> LLMProposal:
     """Run safety checks on the proposal. Strips duplicate-formula new
     versions before validation — those are LLM noise where the model
     appended a version row with the baseline formula verbatim. Raises
@@ -171,9 +180,7 @@ def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
     # 1. No baseline rule was dropped.
     dropped = baseline_rules.keys() - proposal_rules.keys()
     if dropped:
-        raise ProposalRejected(
-            f"proposal dropped baseline rules: {sorted(dropped)}"
-        )
+        raise ProposalRejected(f"proposal dropped baseline rules: {sorted(dropped)}")
 
     eff = effective_from.isoformat()
     rules_with_real_change: list[str] = []
@@ -188,27 +195,45 @@ def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
         prop_versions = prule.get("versions") or []
         if not baseline_versions:
             continue
-        baseline_dates = {v.get("effective_from") for v in baseline_versions}
-        prop_dates = {v.get("effective_from") for v in prop_versions}
+        baseline_dates = {
+            _version_date_iso(v.get("effective_from")) for v in baseline_versions
+        }
+        prop_dates = {_version_date_iso(v.get("effective_from")) for v in prop_versions}
         missing = baseline_dates - prop_dates
         if missing:
             raise ProposalRejected(
                 f"rule {name!r}: baseline version(s) {sorted(missing)} "
                 f"are missing from the proposal"
             )
+        proposal_versions_by_date = {
+            _version_date_iso(v.get("effective_from")): v for v in prop_versions
+        }
+        for baseline_version in baseline_versions:
+            baseline_date = _version_date_iso(baseline_version.get("effective_from"))
+            proposal_version = proposal_versions_by_date.get(baseline_date)
+            if proposal_version is None:
+                continue
+            if _normalize_formula(
+                proposal_version.get("formula", "")
+            ) != _normalize_formula(baseline_version.get("formula", "")):
+                raise ProposalRejected(
+                    f"rule {name!r}: historical version {baseline_date} formula "
+                    "changed in the proposal"
+                )
 
         latest_baseline_formula = _normalize_formula(
             baseline_versions[-1].get("formula", "")
         )
         cleaned_versions: list[Any] = []
         for v in prop_versions:
-            if v.get("effective_from") in baseline_dates:
+            version_date = _version_date_iso(v.get("effective_from"))
+            if version_date in baseline_dates:
                 cleaned_versions.append(v)
                 continue
             new_formula = _normalize_formula(v.get("formula", ""))
             if new_formula != latest_baseline_formula:
                 cleaned_versions.append(v)
-                if v.get("effective_from") == eff:
+                if version_date == eff:
                     rules_with_real_change.append(name)
 
         # If we dropped any versions, also strip atom entries that
@@ -237,6 +262,15 @@ def _normalize_formula(s: Any) -> str:
     return re.sub(r"\s+", " ", str(s or "").strip())
 
 
+def _version_date_iso(value: Any) -> str:
+    """Normalize YAML-loaded effective_from values to ISO date strings."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def _trim_atoms_to_versions(rule: dict, n_versions: int) -> None:
     """Drop atom entries whose path references a `versions[N].formula`
     index that's beyond the current versions length."""
@@ -259,9 +293,7 @@ def _trim_atoms_to_versions(rule: dict, n_versions: int) -> None:
 # ────────────────────────────────────────────────────────────────────
 
 
-DEFAULT_MODEL = os.environ.get(
-    "AXIOM_LLM_MODEL", "claude-sonnet-4-5"
-)
+DEFAULT_MODEL = os.environ.get("AXIOM_LLM_MODEL", "claude-sonnet-4-5")
 
 
 def propose_via_anthropic(
@@ -295,7 +327,8 @@ def propose_via_anthropic(
     raw = "\n".join(text_blocks)
     yaml_text = parse_response(raw)
     proposal = validate_proposal(
-        yaml_text, baseline_yaml=baseline_yaml,
+        yaml_text,
+        baseline_yaml=baseline_yaml,
         effective_from=effective_from,
     )
     proposal.model = used_model

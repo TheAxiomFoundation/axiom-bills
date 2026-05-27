@@ -58,7 +58,7 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
     return { filtered: yamlText, total, shown: total, fallback: true };
   }
   return {
-    filtered: preamble + "\n" + kept.join("").trimEnd() + "\n",
+    filtered: preamble + "\n" + kept.join("\n").trimEnd() + "\n",
     total,
     shown: kept.length,
     fallback: false,
