@@ -75,9 +75,12 @@ Hard rules:
 1. Preserve every rule that exists in the baseline YAML. Don't drop
    rules. Don't rename them. If a rule isn't affected by the bill,
    leave it untouched.
-2. For each affected rule, APPEND a new entry to its `versions:` list.
+2. For each AFFECTED rule, APPEND a new entry to its `versions:` list.
    Do NOT replace the existing entry — historical computation still
-   needs to work against pre-bill dates.
+   needs to work against pre-bill dates. A rule is "affected" only if
+   the bill's amendment changes WHAT it computes. If the bill leaves a
+   rule's grounding text and value untouched, DO NOT add a new version
+   row — a version with the same formula as the baseline is noise.
 3. The new version's `effective_from:` must be exactly the date
    provided in the task.
 4. The new version's `formula:` should reflect the law as amended by
@@ -147,9 +150,11 @@ def parse_response(text: str) -> str:
 
 def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
                       effective_from: date) -> LLMProposal:
-    """Run safety checks on the proposal. Raises `ProposalRejected` on
-    any violation. Returns an `LLMProposal` (with `model=''`; the
-    Anthropic-call wrapper fills that in)."""
+    """Run safety checks on the proposal. Strips duplicate-formula new
+    versions before validation — those are LLM noise where the model
+    appended a version row with the baseline formula verbatim. Raises
+    `ProposalRejected` if no rule has a *semantically* new version at
+    the bill's effective date."""
     try:
         proposal = yaml.safe_load(proposal_yaml)
     except yaml.YAMLError as exc:
@@ -171,15 +176,13 @@ def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
         )
 
     eff = effective_from.isoformat()
-    new_version_found = False
+    rules_with_real_change: list[str] = []
 
     # 2. For every rule the model returned that exists in baseline,
-    #    check version preservation + new-effective-date semantics.
+    #    preserve historical versions and clean duplicate new versions.
     for name, prule in proposal_rules.items():
         baseline_rule = baseline_rules.get(name)
         if baseline_rule is None:
-            # Net-new rule the model added (e.g. a new predicate). Allow,
-            # but don't count it as proof of a new version.
             continue
         baseline_versions = baseline_rule.get("versions") or []
         prop_versions = prule.get("versions") or []
@@ -193,13 +196,33 @@ def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
                 f"rule {name!r}: baseline version(s) {sorted(missing)} "
                 f"are missing from the proposal"
             )
-        if eff in prop_dates and eff not in baseline_dates:
-            new_version_found = True
 
-    if not new_version_found:
+        latest_baseline_formula = _normalize_formula(
+            baseline_versions[-1].get("formula", "")
+        )
+        cleaned_versions: list[Any] = []
+        for v in prop_versions:
+            if v.get("effective_from") in baseline_dates:
+                cleaned_versions.append(v)
+                continue
+            new_formula = _normalize_formula(v.get("formula", ""))
+            if new_formula != latest_baseline_formula:
+                cleaned_versions.append(v)
+                if v.get("effective_from") == eff:
+                    rules_with_real_change.append(name)
+
+        # If we dropped any versions, also strip atom entries that
+        # pointed at dropped paths so the YAML stays internally
+        # consistent.
+        if len(cleaned_versions) != len(prop_versions):
+            prule["versions"] = cleaned_versions
+            _trim_atoms_to_versions(prule, len(cleaned_versions))
+
+    if not rules_with_real_change:
         raise ProposalRejected(
-            f"no rule gained a new version at effective_from={eff} — "
-            f"proposal doesn't actually encode the bill's change"
+            f"no rule gained a semantically new version at "
+            f"effective_from={eff} — every proposed new version had "
+            f"the same formula as its baseline"
         )
 
     return LLMProposal(
@@ -207,6 +230,28 @@ def validate_proposal(proposal_yaml: str, *, baseline_yaml: str,
         patched_yaml=yaml.safe_dump(proposal, sort_keys=False),
         model="",
     )
+
+
+def _normalize_formula(s: Any) -> str:
+    """Whitespace-tolerant formula comparison."""
+    return re.sub(r"\s+", " ", str(s or "").strip())
+
+
+def _trim_atoms_to_versions(rule: dict, n_versions: int) -> None:
+    """Drop atom entries whose path references a `versions[N].formula`
+    index that's beyond the current versions length."""
+    proof = (rule.get("metadata") or {}).get("proof")
+    if not isinstance(proof, dict):
+        return
+    atoms = proof.get("atoms") or []
+    kept = []
+    for a in atoms:
+        path = (a.get("path") or "") if isinstance(a, dict) else ""
+        m = re.match(r"versions\[(\d+)\]\.formula", path)
+        if m and int(m.group(1)) >= n_versions:
+            continue
+        kept.append(a)
+    proof["atoms"] = kept
 
 
 # ────────────────────────────────────────────────────────────────────

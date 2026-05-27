@@ -259,6 +259,104 @@ def test_validate_rejects_proposal_dropping_baseline_rules():
                           effective_from=date(2025, 1, 28))
 
 
+def test_validate_rejects_proposal_with_only_duplicate_new_versions():
+    """If every "new version" the model adds has the same formula as
+    the baseline, the proposal doesn't actually encode anything new.
+    Reject so the variant stays "needs human review"."""
+    proposal_yaml = dedent("""\
+        format: rulespec/v1
+        rules:
+          - name: ctc_child_identification_requirement_satisfied
+            kind: derived
+            source: 26 USC 24(e)(1)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  qualifying_child_tin_included_on_return
+              - effective_from: '2025-01-28'
+                formula: |-
+                  qualifying_child_tin_included_on_return
+        """)
+    with pytest.raises(ProposalRejected, match="semantically new"):
+        validate_proposal(proposal_yaml, baseline_yaml=BASELINE,
+                          effective_from=date(2025, 1, 28))
+
+
+def test_validate_strips_duplicate_new_version_when_some_rules_change():
+    """Sibling rules that the LLM padded with identical-formula new
+    versions get cleaned up; the variant carries only the rules that
+    actually changed."""
+    baseline = dedent("""\
+        format: rulespec/v1
+        rules:
+          - name: real_change_rule
+            source: 26 USC 24(e)(1)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  qualifying_child_tin_included_on_return
+          - name: padding_rule
+            source: 26 USC 24(e)(2)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  not taxpayer_identification_number_issued_after_return_due_date
+        """)
+    proposal = dedent("""\
+        format: rulespec/v1
+        rules:
+          - name: real_change_rule
+            source: 26 USC 24(e)(1)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  qualifying_child_tin_included_on_return
+              - effective_from: '2025-01-28'
+                formula: |-
+                  qualifying_child_ssn_included_on_return
+          - name: padding_rule
+            source: 26 USC 24(e)(2)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  not taxpayer_identification_number_issued_after_return_due_date
+              - effective_from: '2025-01-28'
+                formula: |-
+                  not taxpayer_identification_number_issued_after_return_due_date
+        """)
+    out = validate_proposal(proposal, baseline_yaml=baseline,
+                            effective_from=date(2025, 1, 28))
+    patched = yaml.safe_load(out.patched_yaml)
+    by_name = {r["name"]: r for r in patched["rules"]}
+    # Real change kept its new version.
+    assert len(by_name["real_change_rule"]["versions"]) == 2
+    # Padding rule was cleaned back to a single (baseline) version.
+    assert len(by_name["padding_rule"]["versions"]) == 1
+    assert by_name["padding_rule"]["versions"][0]["effective_from"] == "2018-01-01"
+
+
+def test_validate_treats_whitespace_only_diff_as_duplicate():
+    """A new version that differs only in whitespace from baseline is
+    still a no-op semantically."""
+    proposal_yaml = dedent("""\
+        format: rulespec/v1
+        rules:
+          - name: ctc_child_identification_requirement_satisfied
+            kind: derived
+            source: 26 USC 24(e)(1)
+            versions:
+              - effective_from: '2018-01-01'
+                formula: |-
+                  qualifying_child_tin_included_on_return
+              - effective_from: '2025-01-28'
+                formula: |
+                      qualifying_child_tin_included_on_return
+        """)
+    with pytest.raises(ProposalRejected, match="semantically new"):
+        validate_proposal(proposal_yaml, baseline_yaml=BASELINE,
+                          effective_from=date(2025, 1, 28))
+
+
 def test_validate_preserves_baseline_yaml_in_proposal_attr():
     """LLMProposal returned object should hold the original raw YAML
     for callers to render side-by-side."""
