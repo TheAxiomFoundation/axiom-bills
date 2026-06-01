@@ -98,6 +98,41 @@ npm run dev                                  # http://127.0.0.1:5180
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.
 
+## Daily refresh
+
+The dashboard refresh is a single CLI command:
+
+```bash
+cd packages/scrapers
+.venv/bin/python -m axiom_bills.cli refresh --sync
+```
+
+By default it refreshes the production jurisdictions (`us`, `us-ny`,
+`us-co`, `us-mn`) with 50 bills per jurisdiction, fetches texts,
+extracts citations, fetches corpus provisions, precomputes diffs, indexes
+`rulespec-us` if `RULESPEC_US_ROOT` is available, computes rule variants,
+runs LLM variant proposals when `ANTHROPIC_API_KEY` is set, and syncs
+SQLite to Supabase.
+
+The scheduled GitHub Actions workflow lives at
+`.github/workflows/daily-refresh.yml` and also supports manual runs. It
+expects these repository secrets:
+
+```text
+CONGRESS_API_KEY
+NYSENATE_API_KEY
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+ANTHROPIC_API_KEY  # optional; omitted means structural LLM proposals are skipped
+```
+
+Useful local commands:
+
+```bash
+make refresh       # local refresh, skips LLM and does not sync Supabase
+make refresh-prod  # refresh and sync Supabase; requires production secrets
+```
+
 ## How a scrape works
 
 ```

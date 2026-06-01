@@ -1,0 +1,63 @@
+name: Daily bill refresh
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Bills to scrape per jurisdiction"
+        required: false
+        default: "50"
+  schedule:
+    # Morning UTC, before the US workday. The command is idempotent, so
+    # manual reruns are safe.
+    - cron: "17 10 * * *"
+
+concurrency:
+  group: daily-bill-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout axiom-bills
+        uses: actions/checkout@v4
+
+      - name: Checkout rulespec-us
+        uses: actions/checkout@v4
+        with:
+          repository: TheAxiomFoundation/rulespec-us
+          path: rulespec-us
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install scraper dependencies
+        working-directory: packages/scrapers
+        run: uv sync --extra dev
+
+      - name: Prepare SQLite database
+        run: make reset-db
+
+      - name: Refresh bills and sync Supabase
+        working-directory: packages/scrapers
+        env:
+          CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+          NYSENATE_API_KEY: ${{ secrets.NYSENATE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RULESPEC_US_ROOT: ${{ github.workspace }}/rulespec-us
+        run: |
+          LIMIT="${{ github.event.inputs.limit }}"
+          if [ -z "$LIMIT" ]; then
+            LIMIT=50
+          fi
+          .venv/bin/python -m axiom_bills.cli refresh --limit "$LIMIT" --sync

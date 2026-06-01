@@ -8,7 +8,8 @@ axiom-bills list
 """
 from __future__ import annotations
 
-import sys
+import os
+from pathlib import Path
 
 import click
 
@@ -71,6 +72,8 @@ CITATION_EXTRACTORS = {
     "us-mn": extract_us_mn,
 }
 
+DEFAULT_REFRESH_JURISDICTIONS = ("us", "us-ny", "us-co", "us-mn")
+
 
 @click.group()
 def main() -> None:
@@ -82,6 +85,51 @@ def list_jurisdictions() -> None:
     """List registered jurisdictions."""
     for code, cls in REGISTRY.items():
         click.echo(f"{code:<8} {cls.source_name}")
+
+
+def _scrape_counts(jurisdiction: str, limit: int | None,
+                   congress: int | None = None,
+                   bill: tuple[str, ...] = (),
+                   dry_run: bool = False) -> dict[str, int]:
+    """Run one scraper and return write counts.
+
+    Kept separate from the Click command so the scheduled refresh can use
+    the same scraper path as manual runs.
+    """
+    cls = REGISTRY[jurisdiction]
+    kwargs: dict = {"limit": limit}
+    if congress is not None and jurisdiction == "us":
+        kwargs["congress"] = congress
+    if bill and jurisdiction == "us":
+        kwargs["bill_ids"] = list(bill)
+    if jurisdiction == "us" and not bill:
+        # Routine refresh: cap the pagination using the last successful
+        # scrape as a since-cursor. A targeted --bill run skips this so
+        # backfills aren't accidentally clipped.
+        since = last_successful_scrape(jurisdiction)
+        if since is not None:
+            kwargs["since"] = since
+            click.echo(f"Refresh since {since.isoformat()} (set --bill to bypass).")
+    scraper = cls(**kwargs)
+
+    if dry_run:
+        bills = list(scraper.bills_iter()) if hasattr(scraper, "bills_iter") \
+                else scraper.scrape().bills
+        scraper.close()
+        return {"bills_seen": len(bills), "bills_new": 0, "actions_new": 0}
+
+    try:
+        # Federal scraper streams bills one at a time and we commit per
+        # bill so a network blip can't lose 6500-bill of work. Other
+        # jurisdictions still use the bulk path.
+        if hasattr(scraper, "bills_iter") and hasattr(scraper, "session"):
+            return write_streaming(
+                jurisdiction, scraper.session(), scraper.bills_iter()
+            )
+        result = scraper.scrape()
+        return write(result)
+    finally:
+        scraper.close()
 
 
 @main.command()
@@ -104,47 +152,171 @@ def list_jurisdictions() -> None:
 def scrape(jurisdiction: str, limit: int | None, congress: int | None,
            bill: tuple[str, ...], dry_run: bool) -> None:
     """Run a scraper end-to-end."""
-    cls = REGISTRY[jurisdiction]
-    kwargs: dict = {"limit": limit}
-    if congress is not None and jurisdiction == "us":
-        kwargs["congress"] = congress
-    if bill and jurisdiction == "us":
-        kwargs["bill_ids"] = list(bill)
-    if jurisdiction == "us" and not bill:
-        # Routine refresh: cap the pagination using the last successful
-        # scrape as a since-cursor. A targeted --bill run skips this so
-        # backfills aren't accidentally clipped.
-        since = last_successful_scrape(jurisdiction)
-        if since is not None:
-            kwargs["since"] = since
-            click.echo(f"Refresh since {since.isoformat()} (set --bill to bypass).")
-    scraper = cls(**kwargs)
-
+    counts = _scrape_counts(jurisdiction, limit, congress, bill, dry_run)
     if dry_run:
-        bills = list(scraper.bills_iter()) if hasattr(scraper, "bills_iter") \
-                else scraper.scrape().bills
-        scraper.close()
-        click.echo(f"Dry run: {len(bills)} bills (not writing).")
+        click.echo(f"Dry run: {counts['bills_seen']} bills (not writing).")
         return
-
-    try:
-        # Federal scraper streams bills one at a time and we commit per
-        # bill so a network blip can't lose 6500-bill of work. Other
-        # jurisdictions still use the bulk path.
-        if hasattr(scraper, "bills_iter") and hasattr(scraper, "session"):
-            counts = write_streaming(
-                jurisdiction, scraper.session(), scraper.bills_iter()
-            )
-        else:
-            result = scraper.scrape()
-            counts = write(result)
-    finally:
-        scraper.close()
 
     click.echo(
         f"Wrote: bills_seen={counts['bills_seen']} "
         f"bills_new={counts['bills_new']} actions_new={counts['actions_new']}"
     )
+
+
+@main.command(name="refresh")
+@click.option(
+    "--jurisdiction", "-j", "jurisdictions",
+    multiple=True,
+    type=click.Choice(list(REGISTRY)),
+    help="Jurisdiction to refresh. Repeatable. Defaults to us and us-ny.",
+)
+@click.option("--limit", "-n", type=int, default=50, show_default=True,
+              help="Scrape at most N bills per jurisdiction.")
+@click.option("--rulespec-root", type=click.Path(exists=True, file_okay=False),
+              default=None, envvar="RULESPEC_US_ROOT",
+              help="Path to rulespec-us for encoding indexing/variants.")
+@click.option("--sync/--no-sync", default=False, show_default=True,
+              help="Push refreshed SQLite rows to Supabase at the end.")
+@click.option("--skip-texts", is_flag=True,
+              help="Skip bill text downloads.")
+@click.option("--skip-corpus", is_flag=True,
+              help="Skip axiom-corpus provision fetches.")
+@click.option("--skip-variants", is_flag=True,
+              help="Skip rulespec indexing and rule variant computation.")
+@click.option("--skip-llm", is_flag=True,
+              help="Skip LLM-assisted structural variant proposals.")
+def refresh(jurisdictions: tuple[str, ...], limit: int,
+            rulespec_root: str | None, sync: bool, skip_texts: bool,
+            skip_corpus: bool, skip_variants: bool, skip_llm: bool) -> None:
+    """Run the routine dashboard refresh pipeline.
+
+    This is the command used by scheduled automation: scrape bills,
+    refresh text/citation/diff artifacts, compute available rule variants,
+    optionally ask the LLM for structural variants, then optionally sync
+    the local SQLite state to Supabase.
+    """
+    targets = jurisdictions or DEFAULT_REFRESH_JURISDICTIONS
+    click.echo(f"Refreshing jurisdictions: {', '.join(targets)}")
+
+    for jurisdiction in targets:
+        click.echo(f"\n== scrape {jurisdiction} ==")
+        counts = _scrape_counts(jurisdiction, limit)
+        click.echo(
+            f"  bills_seen={counts['bills_seen']} "
+            f"bills_new={counts['bills_new']} actions_new={counts['actions_new']}"
+        )
+
+    if not skip_texts:
+        from ._common.text_fetcher import fetch_for_jurisdiction
+
+        for jurisdiction in targets:
+            click.echo(f"\n== fetch texts {jurisdiction} ==")
+            counts = fetch_for_jurisdiction(jurisdiction, limit=limit)
+            click.echo(
+                f"  bills_seen={counts['bills_seen']} "
+                f"versions={counts['versions_seen']} "
+                f"fetched={counts['fetched']} skipped={counts['skipped']}"
+            )
+
+    for jurisdiction in targets:
+        click.echo(f"\n== extract citations {jurisdiction} ==")
+        from ._common.citation_writer import extract_for_jurisdiction
+
+        counts = extract_for_jurisdiction(
+            jurisdiction, CITATION_EXTRACTORS[jurisdiction]
+        )
+        click.echo(
+            f"  bills={counts['bills']} "
+            f"summary_hits={counts['summary_hits']} "
+            f"text_hits={counts['text_hits']} "
+            f"rows={counts['rows_written']}"
+        )
+
+    if not skip_corpus:
+        from ._common.corpus_client import fetch
+
+        for jurisdiction in targets:
+            click.echo(f"\n== fetch corpus {jurisdiction} ==")
+            with connect(DEFAULT_DB) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT c.citation
+                      FROM bill_citations c
+                      JOIN bills b ON b.id = c.bill_id
+                     WHERE b.jurisdiction = ?
+                    """,
+                    (jurisdiction,),
+                ).fetchall()
+            found = 0
+            missing = 0
+            for row in rows:
+                if fetch(row["citation"]) is not None:
+                    found += 1
+                else:
+                    missing += 1
+            click.echo(
+                f"  citations={len(rows)} cached_or_fetched={found} "
+                f"not_in_corpus={missing}"
+            )
+
+    if not skip_variants:
+        if rulespec_root:
+            from ._common.encodings import index_repo
+
+            click.echo("\n== index rulespec-us encodings ==")
+            counts = index_repo(
+                Path(rulespec_root).resolve(),
+                jurisdiction="us",
+                repo_name="rulespec-us",
+            )
+            click.echo(
+                f"  scanned={counts['scanned']} "
+                f"indexed={counts['indexed']} skipped={counts['skipped']}"
+            )
+        else:
+            click.echo("\n== index rulespec-us encodings ==")
+            click.echo("  skipped: set RULESPEC_US_ROOT or --rulespec-root")
+
+    from ._common.diff_precompute import precompute_all
+
+    for jurisdiction in targets:
+        click.echo(f"\n== precompute diffs {jurisdiction} ==")
+        counts = precompute_all(jurisdiction=jurisdiction)
+        click.echo(
+            f"  bills={counts['bills']} "
+            f"with_sections={counts['with_sections']} "
+            f"with_ops={counts['with_ops']}"
+        )
+
+    if not skip_variants:
+        from ._common.variants import compute_all
+
+        for jurisdiction in targets:
+            click.echo(f"\n== precompute variants {jurisdiction} ==")
+            counts = compute_all(jurisdiction=jurisdiction)
+            for key, value in sorted(counts.items()):
+                click.echo(f"  {key}={value}")
+
+    if not skip_llm:
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            from ._common.variants_llm import propose_all
+
+            for jurisdiction in targets:
+                click.echo(f"\n== propose LLM variants {jurisdiction} ==")
+                counts = propose_all(jurisdiction=jurisdiction)
+                for key, value in sorted(counts.items()):
+                    click.echo(f"  {key}={value}")
+        else:
+            click.echo("\n== propose LLM variants ==")
+            click.echo("  skipped: ANTHROPIC_API_KEY is not set")
+
+    if sync:
+        from ._common.supabase_sync import sync as sync_to_supabase
+
+        click.echo("\n== sync supabase ==")
+        counts = sync_to_supabase(DEFAULT_DB)
+        for table, n in counts.items():
+            click.echo(f"  {table}={n}")
 
 
 @main.command()

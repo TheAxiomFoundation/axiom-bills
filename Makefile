@@ -1,4 +1,4 @@
-.PHONY: migrate test api web scrape-federal scrape-ny scrape-co scrape-mn reset-db
+.PHONY: migrate test api web scrape-federal scrape-ny scrape-co scrape-mn refresh refresh-prod reset-db
 
 DB := db/axiom_bills.sqlite
 
@@ -28,6 +28,12 @@ scrape-co:
 
 scrape-mn:
 	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli scrape --jurisdiction us-mn --limit 50
+
+refresh:
+	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli refresh --skip-llm
+
+refresh-prod:
+	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli refresh --sync
 
 api:
 	cd packages/api && .venv/bin/python -m uvicorn axiom_bills_api.main:app --reload --port 8001
