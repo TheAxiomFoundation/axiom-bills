@@ -1,0 +1,2 @@
+"""Louisiana bill scraper package."""
+
