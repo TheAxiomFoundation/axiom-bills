@@ -9,6 +9,7 @@ import pytest
 from axiom_bills._common.models import NormalizedStatus
 from axiom_bills._common.status import match_first
 
+from axiom_bills.jurisdictions.us_al.bill.status import PATTERNS as AL_PATTERNS
 from axiom_bills.jurisdictions.us_ak.bill.status import PATTERNS as AK_PATTERNS
 from axiom_bills.jurisdictions.us_federal.bill.status import (
     PATTERNS as FEDERAL_PATTERNS,
@@ -47,6 +48,28 @@ from axiom_bills.jurisdictions.us_wy.bill.status import PATTERNS as WY_PATTERNS
 ])
 def test_federal_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, FEDERAL_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Read for the first time and referred to the House Committee on State Government",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Pending Committee Action in House of Origin", NormalizedStatus.IN_COMMITTEE),
+    ("Read for the Second Time and placed on the Calendar",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Motion to Read a Third Time and Pass as Amended - Adopted Roll Call 536",
+                                                   NormalizedStatus.PASSED_CHAMBER),
+    ("Third Reading in House of Origin",           NormalizedStatus.PASSED_CHAMBER),
+    ("Engrossed",                                  NormalizedStatus.PASSED_CHAMBER),
+    ("Tillman 1st Amendment Offered; Amendment/Substitute: JP8ATFN-1",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Ross intended to vote \"Yea\"",              NormalizedStatus.IN_COMMITTEE),
+    ("Carried Over to the Call of the Chair",      NormalizedStatus.IN_COMMITTEE),
+    ("Enrolled",                                  NormalizedStatus.ENROLLED),
+    ("Delivered to Governor",                     NormalizedStatus.ENROLLED),
+    ("Enacted",                                   NormalizedStatus.ENACTED),
+])
+def test_al_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, AL_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [

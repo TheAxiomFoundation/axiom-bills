@@ -20,6 +20,10 @@ from ._common.db import (
 )
 from ._common.models import NormalizedStatus, STATUS_ORDER
 from ._common.status import match_first
+from .jurisdictions.us_al.bill.scrape import AlabamaScraper
+from .jurisdictions.us_al.bill.status import PATTERNS as AL_PATTERNS
+from .jurisdictions.us_al.bill.kind import classify as classify_us_al
+from .jurisdictions.us_al.bill.citations import extract as extract_us_al
 from .jurisdictions.us_ak.bill.scrape import AlaskaScraper
 from .jurisdictions.us_ak.bill.status import PATTERNS as AK_PATTERNS
 from .jurisdictions.us_ak.bill.kind import classify as classify_us_ak
@@ -107,6 +111,7 @@ from .jurisdictions.us_wy.bill.citations import extract as extract_us_wy
 
 REGISTRY: dict[str, type[BillScraper]] = {
     "us":    FederalScraper,
+    "us-al": AlabamaScraper,
     "us-ak": AlaskaScraper,
     "us-ny": NewYorkScraper,
     "us-co": ColoradoScraper,
@@ -133,6 +138,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
 # existing bill_actions in-place when we tune the status vocabulary.
 PATTERNS_BY_JURISDICTION = {
     "us":    FEDERAL_PATTERNS,
+    "us-al": AL_PATTERNS,
     "us-ak": AK_PATTERNS,
     "us-ny": NY_PATTERNS,
     "us-co": CO_PATTERNS,
@@ -158,6 +164,7 @@ PATTERNS_BY_JURISDICTION = {
 # Title-to-kind classifiers, used by `reclassify-kinds`.
 KIND_CLASSIFIERS = {
     "us":    classify_us,
+    "us-al": classify_us_al,
     "us-ak": classify_us_ak,
     "us-ny": classify_us_ny,
     "us-co": classify_us_co,
@@ -183,6 +190,7 @@ KIND_CLASSIFIERS = {
 # Citation extractors, used by `extract-citations`.
 CITATION_EXTRACTORS = {
     "us":    extract_us,
+    "us-al": extract_us_al,
     "us-ak": extract_us_ak,
     "us-ny": extract_us_ny,
     "us-co": extract_us_co,
