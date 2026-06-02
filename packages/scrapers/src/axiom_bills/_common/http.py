@@ -63,6 +63,19 @@ class RateLimitedClient:
             response.raise_for_status()
         return response
 
+    @retry(
+        retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        stop=stop_after_attempt(4),
+        reraise=True,
+    )
+    def post(self, url: str, **kwargs) -> httpx.Response:
+        self._wait_for(url)
+        response = self._client.post(url, **kwargs)
+        if response.status_code >= 500 or response.status_code == 429:
+            response.raise_for_status()
+        return response
+
     def get_json(self, url: str, **kwargs):
         return self.get(url, **kwargs).json()
 
