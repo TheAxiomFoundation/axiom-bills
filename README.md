@@ -32,6 +32,7 @@ axiom-bills/
 | `us-mn` | revisor.mn.gov                | Full impl   |
 | `us-oh` | Ohio SOLAR/LIS API            | Full impl   |
 | `us-or` | Oregon OLIS OData API         | Full impl   |
+| `us-ri` | status.rilegislature.gov      | Full impl   |
 | `us-sd` | sdlegislature.gov official API | Full impl   |
 | `us-ut` | le.utah.gov official JSON     | Full impl   |
 | `us-wi` | docs.legis.wisconsin.gov      | Full impl   |
