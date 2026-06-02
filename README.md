@@ -29,6 +29,7 @@ axiom-bills/
 | `us-fl` | flsenate.gov                  | Full impl   |
 | `us-id` | legislature.idaho.gov         | Full impl   |
 | `us-ks` | Kansas KLISS REST API         | Full impl   |
+| `us-ma` | malegislature.gov public API  | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
 | `us-nd` | ndlegis.gov official JSON API | Full impl   |

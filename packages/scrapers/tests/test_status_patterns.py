@@ -19,6 +19,7 @@ from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
 from axiom_bills.jurisdictions.us_fl.bill.status import PATTERNS as FL_PATTERNS
 from axiom_bills.jurisdictions.us_id.bill.status import PATTERNS as ID_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
+from axiom_bills.jurisdictions.us_ma.bill.status import PATTERNS as MA_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
 from axiom_bills.jurisdictions.us_nd.bill.status import PATTERNS as ND_PATTERNS
@@ -168,6 +169,27 @@ def test_id_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_ks_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, KS_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Referred to the committee on Telecommunications, Utilities and Energy",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("Senate concurred",                       NormalizedStatus.PASSED_CHAMBER),
+    ("Hearing scheduled for 05/06/2025 from 11:00 AM-01:00 PM in A-2",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("Hearing rescheduled to 10/14/2025 from 01:00 PM-05:00 PM in A-1",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("Accompanied a study order, see H5323",   NormalizedStatus.FAILED),
+    ("Accompanied H5500",                       NormalizedStatus.IN_COMMITTEE),
+    ("Reported, in part, by H5500",             NormalizedStatus.IN_COMMITTEE),
+    ("Placed on file",                         NormalizedStatus.FAILED),
+    ("Read third and passed to be engrossed",  NormalizedStatus.PASSED_CHAMBER),
+    ("Enacted and laid before the Governor",   NormalizedStatus.ENROLLED),
+    ("Signed by the Governor",                 NormalizedStatus.SIGNED),
+    ("Chapter 12 of the Acts of 2026",         NormalizedStatus.ENACTED),
+])
+def test_ma_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, MA_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
