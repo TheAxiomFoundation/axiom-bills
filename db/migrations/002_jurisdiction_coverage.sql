@@ -10,5 +10,4 @@ ALTER TABLE jurisdictions
   ADD COLUMN coverage TEXT NOT NULL DEFAULT 'planned'
   CHECK (coverage IN ('full', 'stub', 'planned'));
 
-UPDATE jurisdictions SET coverage = 'full' WHERE code IN ('us', 'us-ny');
-UPDATE jurisdictions SET coverage = 'stub' WHERE code IN ('us-co', 'us-mn');
+UPDATE jurisdictions SET coverage = 'full' WHERE code IN ('us', 'us-ny', 'us-co', 'us-de', 'us-mn');
