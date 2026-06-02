@@ -11,7 +11,7 @@ on:
     - cron: "17 */6 * * *"
 
 concurrency:
-  group: refresh-state-bills
+  group: refresh-state-bills-${{ inputs.state || 'all' }}
   cancel-in-progress: false
 
 jobs:
