@@ -7,8 +7,8 @@ from axiom_bills._common.status import compile_patterns
 PATTERNS = compile_patterns([
     (r"signed by the governor|approved by the governor|enacted under article", NormalizedStatus.SIGNED),
     (r"passed enrolled|returned passed|passed by the general assembly", NormalizedStatus.ENROLLED),
-    (r"third reading passed|passed in the (house|senate)", NormalizedStatus.PASSED_CHAMBER),
-    (r"favorable report|favorable with amendments|committee report", NormalizedStatus.IN_COMMITTEE),
+    (r"third reading passed|passed in the (house|senate)|^passed(?: with amendments)?$", NormalizedStatus.PASSED_CHAMBER),
+    (r"favorable(?: report| with amendments)?|committee report", NormalizedStatus.IN_COMMITTEE),
     (r"hearing|referred|first reading", NormalizedStatus.IN_COMMITTEE),
     (r"withdrawn|failed|unfavorable report", NormalizedStatus.FAILED),
 ])

@@ -18,7 +18,7 @@ PATTERNS = compile_patterns([
     (r"override.*veto", NormalizedStatus.VETO_OVERRIDDEN),
     (r"passed", NormalizedStatus.PASSED_CHAMBER),
     (r"concur", NormalizedStatus.PASSED_CHAMBER),
-    (r"refer to committee", NormalizedStatus.IN_COMMITTEE),
+    (r"re-?referred|refer to committee", NormalizedStatus.IN_COMMITTEE),
     (r"reported", NormalizedStatus.IN_COMMITTEE),
     (r"committee", NormalizedStatus.IN_COMMITTEE),
     (r"introduced", NormalizedStatus.INTRODUCED),
