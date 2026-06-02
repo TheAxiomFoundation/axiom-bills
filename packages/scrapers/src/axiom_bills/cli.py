@@ -44,6 +44,10 @@ from .jurisdictions.us_mn.bill.scrape import MinnesotaScraper
 from .jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
 from .jurisdictions.us_mn.bill.kind import classify as classify_us_mn
 from .jurisdictions.us_mn.bill.citations import extract as extract_us_mn
+from .jurisdictions.us_or.bill.scrape import OregonScraper
+from .jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
+from .jurisdictions.us_or.bill.kind import classify as classify_us_or
+from .jurisdictions.us_or.bill.citations import extract as extract_us_or
 
 REGISTRY: dict[str, type[BillScraper]] = {
     "us":    FederalScraper,
@@ -52,6 +56,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-de": DelawareScraper,
     "us-md": MarylandScraper,
     "us-mn": MinnesotaScraper,
+    "us-or": OregonScraper,
 }
 
 # Patterns per jurisdiction, used by the `reclassify` command to re-walk
@@ -63,6 +68,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-de": DE_PATTERNS,
     "us-md": MD_PATTERNS,
     "us-mn": MN_PATTERNS,
+    "us-or": OR_PATTERNS,
 }
 
 # Title-to-kind classifiers, used by `reclassify-kinds`.
@@ -73,6 +79,7 @@ KIND_CLASSIFIERS = {
     "us-de": classify_us_de,
     "us-md": classify_us_md,
     "us-mn": classify_us_mn,
+    "us-or": classify_us_or,
 }
 
 # Citation extractors, used by `extract-citations`.
@@ -83,6 +90,7 @@ CITATION_EXTRACTORS = {
     "us-de": extract_us_de,
     "us-md": extract_us_md,
     "us-mn": extract_us_mn,
+    "us-or": extract_us_or,
 }
 
 
