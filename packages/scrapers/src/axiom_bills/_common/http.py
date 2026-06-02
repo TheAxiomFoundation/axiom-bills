@@ -30,11 +30,13 @@ class RateLimitedClient:
         timeout: float = 30.0,
         user_agent: str = "axiom-bills/0.0.1 (+https://github.com/TheAxiomFoundation/axiom-bills)",
         headers: dict[str, str] | None = None,
+        verify: bool = True,
     ) -> None:
         self._client = httpx.Client(
             timeout=timeout,
             headers={"User-Agent": user_agent, **(headers or {})},
             follow_redirects=True,
+            verify=verify,
         )
         self._min_interval = min_interval_per_host
         self._last_request: dict[str, float] = {}

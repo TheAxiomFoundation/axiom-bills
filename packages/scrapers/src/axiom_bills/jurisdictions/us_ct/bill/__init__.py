@@ -1,0 +1,1 @@
+"""Connecticut bill scraper package."""
