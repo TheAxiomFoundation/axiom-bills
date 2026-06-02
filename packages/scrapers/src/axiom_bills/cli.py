@@ -188,6 +188,10 @@ from .jurisdictions.us_sd.bill.scrape import SouthDakotaScraper
 from .jurisdictions.us_sd.bill.status import PATTERNS as SD_PATTERNS
 from .jurisdictions.us_sd.bill.kind import classify as classify_us_sd
 from .jurisdictions.us_sd.bill.citations import extract as extract_us_sd
+from .jurisdictions.us_tn.bill.scrape import TennesseeScraper
+from .jurisdictions.us_tn.bill.status import PATTERNS as TN_PATTERNS
+from .jurisdictions.us_tn.bill.kind import classify as classify_us_tn
+from .jurisdictions.us_tn.bill.citations import extract as extract_us_tn
 from .jurisdictions.us_ut.bill.scrape import UtahScraper
 from .jurisdictions.us_ut.bill.status import PATTERNS as UT_PATTERNS
 from .jurisdictions.us_ut.bill.kind import classify as classify_us_ut
@@ -244,6 +248,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-ri": RhodeIslandScraper,
     "us-sc": SouthCarolinaScraper,
     "us-sd": SouthDakotaScraper,
+    "us-tn": TennesseeScraper,
     "us-ut": UtahScraper,
     "us-wi": WisconsinScraper,
     "us-wy": WyomingScraper,
@@ -294,6 +299,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-ri": RI_PATTERNS,
     "us-sc": SC_PATTERNS,
     "us-sd": SD_PATTERNS,
+    "us-tn": TN_PATTERNS,
     "us-ut": UT_PATTERNS,
     "us-wi": WI_PATTERNS,
     "us-wy": WY_PATTERNS,
@@ -343,6 +349,7 @@ KIND_CLASSIFIERS = {
     "us-ri": classify_us_ri,
     "us-sc": classify_us_sc,
     "us-sd": classify_us_sd,
+    "us-tn": classify_us_tn,
     "us-ut": classify_us_ut,
     "us-wi": classify_us_wi,
     "us-wy": classify_us_wy,
@@ -392,6 +399,7 @@ CITATION_EXTRACTORS = {
     "us-ri": extract_us_ri,
     "us-sc": extract_us_sc,
     "us-sd": extract_us_sd,
+    "us-tn": extract_us_tn,
     "us-ut": extract_us_ut,
     "us-wi": extract_us_wi,
     "us-wy": extract_us_wy,
