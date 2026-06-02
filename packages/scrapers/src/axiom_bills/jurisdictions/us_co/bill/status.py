@@ -16,8 +16,12 @@ PATTERNS = compile_patterns([
     (r"governor vetoed", NormalizedStatus.VETOED),
     (r"veto override", NormalizedStatus.VETO_OVERRIDDEN),
     (r"signed by (the speaker|the president)", NormalizedStatus.PASSED_BOTH),
+    (r"concur.*repass", NormalizedStatus.PASSED_CHAMBER),
     (r"third reading passed", NormalizedStatus.PASSED_CHAMBER),
+    (r"second reading.*passed", NormalizedStatus.IN_COMMITTEE),
+    (r"laid over", NormalizedStatus.IN_COMMITTEE),
     (r"introduced in (house|senate)", NormalizedStatus.INTRODUCED),
     (r"referred to", NormalizedStatus.IN_COMMITTEE),
     (r"committee on .* (report|refer)", NormalizedStatus.IN_COMMITTEE),
+    (r"witness testimony|committee discussion|considered .*amendments", NormalizedStatus.IN_COMMITTEE),
 ])

@@ -15,16 +15,19 @@ from typing import Callable
 
 
 Extractor = Callable[[str], list[tuple[str, str]]]
+PatternSpec = str | tuple[re.Pattern[str], Callable[[re.Match[str]], str]]
 
 
-def regex_extractor(patterns: list[tuple[re.Pattern[str], Callable[[re.Match[str]], str]]]) -> Extractor:
-    """Build an extractor that runs each (pattern, normalizer) against text."""
+def regex_extractor(patterns: list[PatternSpec]) -> Extractor:
+    """Build an extractor from regex strings or (pattern, normalizer) pairs."""
+
+    compiled = [_compile_pattern(pattern) for pattern in patterns]
 
     def extract(text: str) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
         if not text:
             return out
-        for pattern, normalize in patterns:
+        for pattern, normalize in compiled:
             for match in pattern.finditer(text):
                 citation = normalize(match)
                 if citation:
@@ -32,3 +35,13 @@ def regex_extractor(patterns: list[tuple[re.Pattern[str], Callable[[re.Match[str
         return out
 
     return extract
+
+
+def _compile_pattern(pattern: PatternSpec) -> tuple[re.Pattern[str], Callable[[re.Match[str]], str]]:
+    if isinstance(pattern, str):
+        return re.compile(pattern, re.IGNORECASE), _normalize_raw
+    return pattern
+
+
+def _normalize_raw(match: re.Match[str]) -> str:
+    return re.sub(r"\s+", " ", match.group(0)).strip()
