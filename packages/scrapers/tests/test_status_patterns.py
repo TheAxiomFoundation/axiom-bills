@@ -15,6 +15,7 @@ from axiom_bills.jurisdictions.us_federal.bill.status import (
 from axiom_bills.jurisdictions.us_ny.bill.status import PATTERNS as NY_PATTERNS
 from axiom_bills.jurisdictions.us_co.bill.status import PATTERNS as CO_PATTERNS
 from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
+from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
 
 
@@ -68,6 +69,20 @@ def test_co_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_de_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, DE_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("In the House - First Reading House Rules and Executive Nominations",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("In the House - Hearing 1/20 at 1:00 p.m.",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("Favorable with Amendments",               NormalizedStatus.IN_COMMITTEE),
+    ("Third Reading Passed",                    NormalizedStatus.PASSED_CHAMBER),
+    ("Passed by the General Assembly",          NormalizedStatus.ENROLLED),
+    ("Approved by the Governor",                NormalizedStatus.SIGNED),
+])
+def test_md_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, MD_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
