@@ -18,6 +18,7 @@ from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
+from axiom_bills.jurisdictions.us_oh.bill.status import PATTERNS as OH_PATTERNS
 from axiom_bills.jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
 
 
@@ -114,6 +115,20 @@ def test_md_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_mn_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, MN_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Introduced",                              NormalizedStatus.INTRODUCED),
+    ("Refer to Committee: Public Safety",       NormalizedStatus.IN_COMMITTEE),
+    ("Reported - Substitute",                   NormalizedStatus.IN_COMMITTEE),
+    ("Passed",                                  NormalizedStatus.PASSED_CHAMBER),
+    ("Concurred in Senate amendments",          NormalizedStatus.PASSED_CHAMBER),
+    ("Enrolled",                                NormalizedStatus.ENROLLED),
+    ("Governor signed",                         NormalizedStatus.SIGNED),
+    ("Effective",                               NormalizedStatus.ENACTED),
+])
+def test_oh_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, OH_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [

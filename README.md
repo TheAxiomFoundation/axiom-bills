@@ -28,6 +28,7 @@ axiom-bills/
 | `us-ks` | Kansas KLISS REST API         | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
+| `us-oh` | Ohio SOLAR/LIS API            | Full impl   |
 | `us-or` | Oregon OLIS OData API         | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
@@ -56,6 +57,7 @@ make scrape-de
 make scrape-ks
 make scrape-md
 make scrape-mn
+make scrape-oh
 make scrape-or
 
 # 6. Two terminals:
