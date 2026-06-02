@@ -55,6 +55,52 @@ def _chunks(seq: list, n: int) -> Iterable[list]:
         yield seq[i:i + n]
 
 
+def _select_all(client: httpx.Client, table: str, params: dict[str, str]) -> list[dict]:
+    rows: list[dict] = []
+    page_size = 1000
+    start = 0
+    while True:
+        end = start + page_size - 1
+        resp = client.get(
+            f"/{table}",
+            params=params,
+            headers={"Range": f"{start}-{end}"},
+        )
+        if resp.status_code >= 300:
+            raise RuntimeError(
+                f"Supabase read from {table} failed ({resp.status_code}): "
+                f"{resp.text[:500]}"
+            )
+        batch = resp.json()
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
+def _remote_rows_by_in(
+    client: httpx.Client,
+    table: str,
+    *,
+    select: str,
+    column: str,
+    values: Iterable[str],
+    chunk: int = 100,
+) -> list[dict]:
+    unique_values = sorted({value for value in values if value})
+    rows: list[dict] = []
+    for batch in _chunks(unique_values, chunk):
+        rows.extend(_select_all(
+            client,
+            table,
+            {
+                "select": select,
+                column: f"in.({','.join(batch)})",
+            },
+        ))
+    return rows
+
+
 def _upsert(client: httpx.Client, table: str, rows: list[dict], *,
             on_conflict: str | None = None, chunk: int = 500) -> int:
     if not rows:
@@ -84,8 +130,79 @@ def _rows(local: sqlite3.Connection, sql: str) -> list[dict]:
     return [dict(r) for r in local.execute(sql).fetchall()]
 
 
+def _has_column(local: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column for r in local.execute(f"PRAGMA table_info({table})"))
+
+
 def _bool(v) -> bool:
     return bool(v) if v not in (None, "") else False
+
+
+def _remote_session_ids(client: httpx.Client, local_rows: list[sqlite3.Row]) -> dict[str, str]:
+    remote_rows = _remote_rows_by_in(
+        client,
+        "sessions",
+        select="id,jurisdiction,name",
+        column="jurisdiction",
+        values=(r["jurisdiction"] for r in local_rows),
+    )
+    existing = {
+        (r["jurisdiction"], r["name"]): r["id"]
+        for r in remote_rows
+    }
+    return {
+        r["id"]: existing.get((r["jurisdiction"], r["name"]), r["id"])
+        for r in local_rows
+    }
+
+
+def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
+    remote_rows = _remote_rows_by_in(
+        client,
+        "bills",
+        select="id,jurisdiction,session_id,chamber,number",
+        column="session_id",
+        values=(r["session_id"] for r in rows),
+    )
+    existing = {
+        (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]): r["id"]
+        for r in remote_rows
+    }
+    return {
+        r["id"]: existing.get(
+            (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]),
+            r["id"],
+        )
+        for r in rows
+    }
+
+
+def _remote_child_ids(
+    client: httpx.Client,
+    table: str,
+    *,
+    rows: list[dict],
+    select: str,
+    key_columns: tuple[str, ...],
+) -> dict[str, str]:
+    remote_rows = _remote_rows_by_in(
+        client,
+        table,
+        select=f"id,bill_id,{select}",
+        column="bill_id",
+        values=(r["bill_id"] for r in rows),
+    )
+    existing = {
+        tuple(r[column] for column in ("bill_id", *key_columns)): r["id"]
+        for r in remote_rows
+    }
+    return {
+        r["id"]: existing.get(
+            tuple(r[column] for column in ("bill_id", *key_columns)),
+            r["id"],
+        )
+        for r in rows
+    }
 
 
 def sync(db_path: str) -> dict[str, int]:
@@ -101,32 +218,37 @@ def sync(db_path: str) -> dict[str, int]:
         )
 
         # 2. Sessions
-        rows = []
-        for r in local.execute(
+        session_rows = local.execute(
             "SELECT id, jurisdiction, name, start_date, end_date, is_current FROM sessions"
-        ):
+        ).fetchall()
+        session_id_map = _remote_session_ids(client, session_rows)
+        rows = []
+        for r in session_rows:
             rows.append({
-                "id": r["id"],
+                "id": session_id_map[r["id"]],
                 "jurisdiction": r["jurisdiction"],
                 "name": r["name"],
                 "start_date": r["start_date"],
                 "end_date": r["end_date"],
                 "is_current": _bool(r["is_current"]),
             })
-        counts["sessions"] = _upsert(client, "sessions", rows, on_conflict="id")
+        counts["sessions"] = _upsert(
+            client, "sessions", rows, on_conflict="jurisdiction,name"
+        )
 
         # 3. Bills — includes the diffs JSONB.
         bills_rows: list[dict] = []
-        for r in local.execute("""
+        diffs_expr = "diffs" if _has_column(local, "bills", "diffs") else "NULL AS diffs"
+        for r in local.execute(f"""
             SELECT id, jurisdiction, session_id, chamber, number, title, summary,
                    subjects, sponsors, source_url, current_status, current_status_at,
-                   kind, first_seen_at, last_scraped_at, diffs
+                   kind, first_seen_at, last_scraped_at, {diffs_expr}
               FROM bills
         """):
             bills_rows.append({
                 "id": r["id"],
                 "jurisdiction": r["jurisdiction"],
-                "session_id": r["session_id"],
+                "session_id": session_id_map.get(r["session_id"], r["session_id"]),
                 "chamber": r["chamber"],
                 "number": r["number"],
                 "title": r["title"],
@@ -141,7 +263,13 @@ def sync(db_path: str) -> dict[str, int]:
                 "last_scraped_at": r["last_scraped_at"],
                 "diffs": json.loads(r["diffs"]) if r["diffs"] else None,
             })
-        counts["bills"] = _upsert(client, "bills", bills_rows, on_conflict="id")
+        bill_id_map = _remote_bill_ids(client, bills_rows)
+        for row in bills_rows:
+            row["id"] = bill_id_map[row["id"]]
+        counts["bills"] = _upsert(
+            client, "bills", bills_rows,
+            on_conflict="jurisdiction,session_id,chamber,number",
+        )
 
         # 4. Bill actions
         rows = []
@@ -152,7 +280,7 @@ def sync(db_path: str) -> dict[str, int]:
         """):
             rows.append({
                 "id": r["id"],
-                "bill_id": r["bill_id"],
+                "bill_id": bill_id_map.get(r["bill_id"], r["bill_id"]),
                 "occurred_at": r["occurred_at"],
                 "chamber": r["chamber"],
                 "action_text": r["action_text"],
@@ -161,7 +289,18 @@ def sync(db_path: str) -> dict[str, int]:
                 "fingerprint": r["fingerprint"],
                 "ingested_at": r["ingested_at"],
             })
-        counts["bill_actions"] = _upsert(client, "bill_actions", rows, on_conflict="id")
+        child_id_map = _remote_child_ids(
+            client,
+            "bill_actions",
+            rows=rows,
+            select="fingerprint",
+            key_columns=("fingerprint",),
+        )
+        for row in rows:
+            row["id"] = child_id_map[row["id"]]
+        counts["bill_actions"] = _upsert(
+            client, "bill_actions", rows, on_conflict="bill_id,fingerprint"
+        )
 
         # 5. Bill versions
         rows = []
@@ -169,8 +308,21 @@ def sync(db_path: str) -> dict[str, int]:
             SELECT id, bill_id, label, source_url, format, text_sha256, fetched_at
               FROM bill_versions
         """):
-            rows.append(dict(r))
-        counts["bill_versions"] = _upsert(client, "bill_versions", rows, on_conflict="id")
+            row = dict(r)
+            row["bill_id"] = bill_id_map.get(row["bill_id"], row["bill_id"])
+            rows.append(row)
+        child_id_map = _remote_child_ids(
+            client,
+            "bill_versions",
+            rows=rows,
+            select="label",
+            key_columns=("label",),
+        )
+        for row in rows:
+            row["id"] = child_id_map[row["id"]]
+        counts["bill_versions"] = _upsert(
+            client, "bill_versions", rows, on_conflict="bill_id,label"
+        )
 
         # 6. Bill texts — these are large but worth syncing so the
         #    frontend can show the latest version.
@@ -180,8 +332,21 @@ def sync(db_path: str) -> dict[str, int]:
                    text_sha256, fetched_at
               FROM bill_texts
         """):
-            rows.append(dict(r))
-        counts["bill_texts"] = _upsert(client, "bill_texts", rows, on_conflict="id", chunk=200)
+            row = dict(r)
+            row["bill_id"] = bill_id_map.get(row["bill_id"], row["bill_id"])
+            rows.append(row)
+        child_id_map = _remote_child_ids(
+            client,
+            "bill_texts",
+            rows=rows,
+            select="version_label",
+            key_columns=("version_label",),
+        )
+        for row in rows:
+            row["id"] = child_id_map[row["id"]]
+        counts["bill_texts"] = _upsert(
+            client, "bill_texts", rows, on_conflict="bill_id,version_label", chunk=200
+        )
 
         # 7. Bill citations
         rows = []
@@ -189,8 +354,21 @@ def sync(db_path: str) -> dict[str, int]:
             SELECT id, bill_id, raw, citation, source, extracted_at
               FROM bill_citations
         """):
-            rows.append(dict(r))
-        counts["bill_citations"] = _upsert(client, "bill_citations", rows, on_conflict="id")
+            row = dict(r)
+            row["bill_id"] = bill_id_map.get(row["bill_id"], row["bill_id"])
+            rows.append(row)
+        child_id_map = _remote_child_ids(
+            client,
+            "bill_citations",
+            rows=rows,
+            select="citation,source",
+            key_columns=("citation", "source"),
+        )
+        for row in rows:
+            row["id"] = child_id_map[row["id"]]
+        counts["bill_citations"] = _upsert(
+            client, "bill_citations", rows, on_conflict="bill_id,citation,source"
+        )
 
         # 8. Encodings + rules + atoms
         rows = []
@@ -232,7 +410,7 @@ def sync(db_path: str) -> dict[str, int]:
             """):
                 rows.append({
                     "id": r["id"],
-                    "bill_id": r["bill_id"],
+                    "bill_id": bill_id_map.get(r["bill_id"], r["bill_id"]),
                     "encoding_id": r["encoding_id"],
                     "file_path": r["file_path"],
                     "tier": r["tier"],
