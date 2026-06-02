@@ -148,6 +148,10 @@ from .jurisdictions.us_nv.bill.scrape import NevadaScraper
 from .jurisdictions.us_nv.bill.status import PATTERNS as NV_PATTERNS
 from .jurisdictions.us_nv.bill.kind import classify as classify_us_nv
 from .jurisdictions.us_nv.bill.citations import extract as extract_us_nv
+from .jurisdictions.us_ok.bill.scrape import OklahomaScraper
+from .jurisdictions.us_ok.bill.status import PATTERNS as OK_PATTERNS
+from .jurisdictions.us_ok.bill.kind import classify as classify_us_ok
+from .jurisdictions.us_ok.bill.citations import extract as extract_us_ok
 from .jurisdictions.us_nc.bill.scrape import NorthCarolinaScraper
 from .jurisdictions.us_nc.bill.status import PATTERNS as NC_PATTERNS
 from .jurisdictions.us_nc.bill.kind import classify as classify_us_nc
@@ -222,6 +226,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-nj": NewJerseyScraper,
     "us-nm": NewMexicoScraper,
     "us-nv": NevadaScraper,
+    "us-ok": OklahomaScraper,
     "us-nc": NorthCarolinaScraper,
     "us-ne": NebraskaScraper,
     "us-nd": NorthDakotaScraper,
@@ -269,6 +274,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-nj": NJ_PATTERNS,
     "us-nm": NM_PATTERNS,
     "us-nv": NV_PATTERNS,
+    "us-ok": OK_PATTERNS,
     "us-nc": NC_PATTERNS,
     "us-ne": NE_PATTERNS,
     "us-nd": ND_PATTERNS,
@@ -315,6 +321,7 @@ KIND_CLASSIFIERS = {
     "us-nj": classify_us_nj,
     "us-nm": classify_us_nm,
     "us-nv": classify_us_nv,
+    "us-ok": classify_us_ok,
     "us-nc": classify_us_nc,
     "us-ne": classify_us_ne,
     "us-nd": classify_us_nd,
@@ -361,6 +368,7 @@ CITATION_EXTRACTORS = {
     "us-nj": extract_us_nj,
     "us-nm": extract_us_nm,
     "us-nv": extract_us_nv,
+    "us-ok": extract_us_ok,
     "us-nc": extract_us_nc,
     "us-ne": extract_us_ne,
     "us-nd": extract_us_nd,
