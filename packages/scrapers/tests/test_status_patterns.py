@@ -15,6 +15,7 @@ from axiom_bills.jurisdictions.us_federal.bill.status import (
 from axiom_bills.jurisdictions.us_ny.bill.status import PATTERNS as NY_PATTERNS
 from axiom_bills.jurisdictions.us_co.bill.status import PATTERNS as CO_PATTERNS
 from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
+from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
 from axiom_bills.jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
@@ -70,6 +71,23 @@ def test_co_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_de_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, DE_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Introduced on Wednesday, January 15, 2025",
+                                                NormalizedStatus.INTRODUCED),
+    ("Referred to Committee on Taxation",       NormalizedStatus.IN_COMMITTEE),
+    ("Committee Report recommending bill be passed as amended",
+                                                NormalizedStatus.PASSED_CHAMBER),
+    ("Enrolled and presented to Governor on Monday, February 2, 2026",
+                                                NormalizedStatus.ENROLLED),
+    ("Approved by Governor on Thursday, February 5, 2026",
+                                                NormalizedStatus.SIGNED),
+    ("Published in the Kansas Register",        NormalizedStatus.ENACTED),
+    ("Veto overridden",                         NormalizedStatus.VETO_OVERRIDDEN),
+])
+def test_ks_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, KS_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
