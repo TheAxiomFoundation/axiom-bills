@@ -54,13 +54,13 @@ class MassachusettsScraper(BillScraper):
                 detail = self.http.get_json(
                     f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}"
                 )
-            except httpx.HTTPError:
+            except (httpx.HTTPError, ValueError):
                 continue
             try:
                 actions = self.http.get_json(
                     f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}/DocumentHistoryActions"
                 )
-            except httpx.HTTPError:
+            except (httpx.HTTPError, ValueError):
                 actions = []
             bill = parse_bill(detail, actions, summary=row, session=session)
             if bill is not None:
