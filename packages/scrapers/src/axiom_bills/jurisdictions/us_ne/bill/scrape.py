@@ -12,6 +12,7 @@ from io import StringIO
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
+import httpx
 from selectolax.parser import HTMLParser
 
 from axiom_bills._common.base import BillScraper
@@ -45,7 +46,7 @@ class BillListItem:
 class NebraskaScraper(BillScraper):
     jurisdiction = "us-ne"
     source_name = "nebraskalegislature.gov"
-    min_interval_per_host = 3.5
+    min_interval_per_host = 8.0
 
     def __init__(self, *, year: int | None = None, limit: int | None = None) -> None:
         super().__init__(limit=limit)
@@ -60,7 +61,10 @@ class NebraskaScraper(BillScraper):
                 if item.document_id in seen:
                     continue
                 seen.add(item.document_id)
-                detail = self.http.get(_detail_url(item.document_id)).text
+                try:
+                    detail = self.http.get(_detail_url(item.document_id)).text
+                except httpx.HTTPError:
+                    continue
                 bills.append(parse_bill_page(detail, item=item, session=session))
                 if self.limit is not None and len(bills) >= self.limit:
                     bills.sort(key=lambda bill: (_number_sort_key(bill.number), bill.number))
