@@ -16,6 +16,7 @@ from axiom_bills.jurisdictions.us_ny.bill.status import PATTERNS as NY_PATTERNS
 from axiom_bills.jurisdictions.us_co.bill.status import PATTERNS as CO_PATTERNS
 from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
 from axiom_bills.jurisdictions.us_fl.bill.status import PATTERNS as FL_PATTERNS
+from axiom_bills.jurisdictions.us_id.bill.status import PATTERNS as ID_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
@@ -95,6 +96,30 @@ def test_de_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_fl_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, FL_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Introduced, read first time, referred to JRA for Printing",
+                                                   NormalizedStatus.INTRODUCED),
+    ("Reported Printed and Referred to Transportation & Defense",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Reported out of Committee with Do Pass Recommendation",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Read second time; Filed for Third Reading",  NormalizedStatus.IN_COMMITTEE),
+    ("U.C. to hold place on third reading calendar one legislative day",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Rules Suspended: Ayes 66 Nays 0 - PASSED - 39-29-2",
+                                                   NormalizedStatus.PASSED_CHAMBER),
+    ("Reported Enrolled; Signed by Speaker; Transmitted to Senate",
+                                                   NormalizedStatus.ENROLLED),
+    ("Delivered to Governor at 10:38 a.m. on April 2, 2026",
+                                                   NormalizedStatus.ENROLLED),
+    ("Reported Signed by Governor on April 2, 2026",
+                                                   NormalizedStatus.SIGNED),
+    ("Session Law Chapter 299",                    NormalizedStatus.ENACTED),
+])
+def test_id_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, ID_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
