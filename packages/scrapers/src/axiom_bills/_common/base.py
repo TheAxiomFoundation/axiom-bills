@@ -15,11 +15,13 @@ class BillScraper(ABC):
     jurisdiction: str             # e.g. 'us', 'us-ny'
     source_name: str              # e.g. 'Congress.gov'
     min_interval_per_host: float = 1.0
+    verify_tls: bool = True
 
     def __init__(self, *, limit: int | None = None) -> None:
         self.limit = limit
         self.http = RateLimitedClient(
             min_interval_per_host=self.min_interval_per_host,
+            verify=self.verify_tls,
         )
 
     @abstractmethod
