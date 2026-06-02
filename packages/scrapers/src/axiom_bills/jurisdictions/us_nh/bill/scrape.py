@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from urllib.parse import urljoin
 
+import httpx
 from selectolax.parser import HTMLParser, Node
 
 from axiom_bills._common.base import BillScraper
@@ -46,7 +47,7 @@ class NewHampshireListItem:
 class NewHampshireScraper(BillScraper):
     jurisdiction = "us-nh"
     source_name = "gc.nh.gov official New Hampshire Bill Status pages"
-    min_interval_per_host = 0.1
+    min_interval_per_host = 0.25
 
     def __init__(
         self,
@@ -66,7 +67,10 @@ class NewHampshireScraper(BillScraper):
             if self.limit is not None and len(bills) >= self.limit:
                 break
             detail_url = _detail_url(bill_id)
-            detail_html = self.http.get(detail_url).text
+            try:
+                detail_html = self.http.get(detail_url).text
+            except httpx.HTTPError:
+                continue
             item = list_item_from_detail(detail_html, detail_url)
             if item is None:
                 continue
