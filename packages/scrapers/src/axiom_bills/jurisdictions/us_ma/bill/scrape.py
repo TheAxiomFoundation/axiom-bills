@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime, time
 
+import httpx
+
 from axiom_bills._common.base import BillScraper
 from axiom_bills._common.models import (
     Bill,
@@ -48,10 +50,18 @@ class MassachusettsScraper(BillScraper):
             number = _clean_text(_get(row, "BillNumber"))
             if not number:
                 continue
-            detail = self.http.get_json(f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}")
-            actions = self.http.get_json(
-                f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}/DocumentHistoryActions"
-            )
+            try:
+                detail = self.http.get_json(
+                    f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}"
+                )
+            except httpx.HTTPError:
+                continue
+            try:
+                actions = self.http.get_json(
+                    f"{ROOT}/api/GeneralCourts/{self.general_court}/Documents/{number}/DocumentHistoryActions"
+                )
+            except httpx.HTTPError:
+                actions = []
             bill = parse_bill(detail, actions, summary=row, session=session)
             if bill is not None:
                 bills.append(bill)
