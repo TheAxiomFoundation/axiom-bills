@@ -22,6 +22,7 @@ from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_ma.bill.status import PATTERNS as MA_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
+from axiom_bills.jurisdictions.us_nc.bill.status import PATTERNS as NC_PATTERNS
 from axiom_bills.jurisdictions.us_nd.bill.status import PATTERNS as ND_PATTERNS
 from axiom_bills.jurisdictions.us_ne.bill.status import PATTERNS as NE_PATTERNS
 from axiom_bills.jurisdictions.us_oh.bill.status import PATTERNS as OH_PATTERNS
@@ -216,6 +217,30 @@ def test_md_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_mn_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, MN_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Filed",                                      NormalizedStatus.INTRODUCED),
+    ("Passed 1st Reading",                        NormalizedStatus.INTRODUCED),
+    ("Ref To Com On Rules and Operations of the Senate",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("Re-ref Com On Finance",                     NormalizedStatus.IN_COMMITTEE),
+    ("Reptd Fav Com Substitute",                  NormalizedStatus.IN_COMMITTEE),
+    ("Amend Tabled A2",                           NormalizedStatus.IN_COMMITTEE),
+    ("Added to Calendar",                         NormalizedStatus.IN_COMMITTEE),
+    ("Placed On Cal For 03/05/2025",              NormalizedStatus.IN_COMMITTEE),
+    ("Adopted",                                   NormalizedStatus.PASSED_CHAMBER),
+    ("Passed 3rd Reading",                        NormalizedStatus.PASSED_CHAMBER),
+    ("Regular Message Sent To Senate",            NormalizedStatus.PASSED_CHAMBER),
+    ("Ordered Engrossed",                         NormalizedStatus.PASSED_CHAMBER),
+    ("Ratified",                                  NormalizedStatus.ENROLLED),
+    ("Pres. To Gov. 7/1/2025",                    NormalizedStatus.ENROLLED),
+    ("Signed by Gov.",                            NormalizedStatus.SIGNED),
+    ("Ch. SL 2025-13",                            NormalizedStatus.ENACTED),
+    ("Vetoed by Governor",                        NormalizedStatus.VETOED),
+])
+def test_nc_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, NC_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [

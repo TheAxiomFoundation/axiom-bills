@@ -32,6 +32,7 @@ axiom-bills/
 | `us-ma` | malegislature.gov public API  | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
+| `us-nc` | ncleg.gov official RSS feeds  | Full impl   |
 | `us-nd` | ndlegis.gov official JSON API | Full impl   |
 | `us-ne` | nebraskalegislature.gov       | Full impl   |
 | `us-oh` | Ohio SOLAR/LIS API            | Full impl   |
