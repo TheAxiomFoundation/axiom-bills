@@ -30,6 +30,7 @@ axiom-bills/
 | `us-mn` | revisor.mn.gov                | Full impl   |
 | `us-oh` | Ohio SOLAR/LIS API            | Full impl   |
 | `us-or` | Oregon OLIS OData API         | Full impl   |
+| `us-ut` | le.utah.gov official JSON     | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
 
@@ -59,6 +60,7 @@ make scrape-md
 make scrape-mn
 make scrape-oh
 make scrape-or
+make scrape-ut
 
 # 6. Two terminals:
 make api    # http://127.0.0.1:8000  (docs at /docs)
