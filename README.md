@@ -25,6 +25,7 @@ axiom-bills/
 | `us-ny` | legislation.nysenate.gov API  | Full impl   |
 | `us-co` | leg.colorado.gov              | Full impl   |
 | `us-de` | legis.delaware.gov JSON feeds | Full impl   |
+| `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
@@ -50,6 +51,7 @@ make scrape-federal
 make scrape-ny
 make scrape-co
 make scrape-de
+make scrape-md
 make scrape-mn
 
 # 6. Two terminals:
