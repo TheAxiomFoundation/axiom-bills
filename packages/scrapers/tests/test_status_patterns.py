@@ -20,6 +20,7 @@ from axiom_bills.jurisdictions.us_id.bill.status import PATTERNS as ID_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
+from axiom_bills.jurisdictions.us_ne.bill.status import PATTERNS as NE_PATTERNS
 from axiom_bills.jurisdictions.us_oh.bill.status import PATTERNS as OH_PATTERNS
 from axiom_bills.jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
 from axiom_bills.jurisdictions.us_ri.bill.status import PATTERNS as RI_PATTERNS
@@ -165,6 +166,25 @@ def test_md_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_mn_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, MN_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Date of introduction",                         NormalizedStatus.INTRODUCED),
+    ("Placed on General File",                       NormalizedStatus.IN_COMMITTEE),
+    ("Advanced to Enrollment and Review Initial",    NormalizedStatus.IN_COMMITTEE),
+    ("Quick priority bill",                          NormalizedStatus.IN_COMMITTEE),
+    ("Provisions/portions of LB725 amended into LB889 by AM3058",
+                                                        NormalizedStatus.IN_COMMITTEE),
+    ("Passed on Final Reading 46-0-3",               NormalizedStatus.PASSED_CHAMBER),
+    ("Dispensing of reading at large approved",      NormalizedStatus.PASSED_CHAMBER),
+    ("President/Speaker signed",                     NormalizedStatus.ENROLLED),
+    ("Presented to Governor on February 12, 2026",   NormalizedStatus.ENROLLED),
+    ("Approved by Governor on February 17, 2026",    NormalizedStatus.ENACTED),
+    ("Indefinitely postponed",                       NormalizedStatus.FAILED),
+    ("Kauth FA345 withdrawn",                        NormalizedStatus.FAILED),
+])
+def test_ne_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, NE_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [

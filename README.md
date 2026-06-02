@@ -30,6 +30,7 @@ axiom-bills/
 | `us-ks` | Kansas KLISS REST API         | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
+| `us-ne` | nebraskalegislature.gov       | Full impl   |
 | `us-oh` | Ohio SOLAR/LIS API            | Full impl   |
 | `us-or` | Oregon OLIS OData API         | Full impl   |
 | `us-ri` | status.rilegislature.gov      | Full impl   |
