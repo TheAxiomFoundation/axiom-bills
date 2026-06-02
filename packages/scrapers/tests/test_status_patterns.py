@@ -20,6 +20,7 @@ from axiom_bills.jurisdictions.us_id.bill.status import PATTERNS as ID_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
+from axiom_bills.jurisdictions.us_nd.bill.status import PATTERNS as ND_PATTERNS
 from axiom_bills.jurisdictions.us_ne.bill.status import PATTERNS as NE_PATTERNS
 from axiom_bills.jurisdictions.us_oh.bill.status import PATTERNS as OH_PATTERNS
 from axiom_bills.jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
@@ -166,6 +167,28 @@ def test_md_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_mn_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, MN_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Introduced, first reading, referred Appropriations Committee",
+                                                NormalizedStatus.INTRODUCED),
+    ("Committee Hearing 08:30",                 NormalizedStatus.IN_COMMITTEE),
+    ("Reported back amended, do pass, amendment placed on calendar 23 0 0",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("Second reading, passed, yeas 83 nays 4", NormalizedStatus.PASSED_CHAMBER),
+    ("Concurred",                              NormalizedStatus.PASSED_CHAMBER),
+    ("Emergency clause carried",               NormalizedStatus.PASSED_CHAMBER),
+    ("Delivered to Governor",                  NormalizedStatus.ENROLLED),
+    ("Sent to Governor",                       NormalizedStatus.ENROLLED),
+    ("Signed by President",                    NormalizedStatus.ENROLLED),
+    ("Governor signed",                        NormalizedStatus.SIGNED),
+    ("Filed with Secretary Of State 04/11",    NormalizedStatus.ENACTED),
+    ("Failed in House",                        NormalizedStatus.FAILED),
+    ("Refused to concur",                      NormalizedStatus.IN_COMMITTEE),
+    ("Division A lost",                        NormalizedStatus.IN_COMMITTEE),
+])
+def test_nd_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, ND_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
