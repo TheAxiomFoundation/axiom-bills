@@ -208,6 +208,10 @@ from .jurisdictions.us_vt.bill.scrape import VermontScraper
 from .jurisdictions.us_vt.bill.status import PATTERNS as VT_PATTERNS
 from .jurisdictions.us_vt.bill.kind import classify as classify_us_vt
 from .jurisdictions.us_vt.bill.citations import extract as extract_us_vt
+from .jurisdictions.us_wa.bill.scrape import WashingtonScraper
+from .jurisdictions.us_wa.bill.status import PATTERNS as WA_PATTERNS
+from .jurisdictions.us_wa.bill.kind import classify as classify_us_wa
+from .jurisdictions.us_wa.bill.citations import extract as extract_us_wa
 from .jurisdictions.us_wi.bill.scrape import WisconsinScraper
 from .jurisdictions.us_wi.bill.status import PATTERNS as WI_PATTERNS
 from .jurisdictions.us_wi.bill.kind import classify as classify_us_wi
@@ -265,6 +269,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-ut": UtahScraper,
     "us-va": VirginiaScraper,
     "us-vt": VermontScraper,
+    "us-wa": WashingtonScraper,
     "us-wi": WisconsinScraper,
     "us-wy": WyomingScraper,
 }
@@ -319,6 +324,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-ut": UT_PATTERNS,
     "us-va": VA_PATTERNS,
     "us-vt": VT_PATTERNS,
+    "us-wa": WA_PATTERNS,
     "us-wi": WI_PATTERNS,
     "us-wy": WY_PATTERNS,
 }
@@ -372,6 +378,7 @@ KIND_CLASSIFIERS = {
     "us-ut": classify_us_ut,
     "us-va": classify_us_va,
     "us-vt": classify_us_vt,
+    "us-wa": classify_us_wa,
     "us-wi": classify_us_wi,
     "us-wy": classify_us_wy,
 }
@@ -425,6 +432,7 @@ CITATION_EXTRACTORS = {
     "us-ut": extract_us_ut,
     "us-va": extract_us_va,
     "us-vt": extract_us_vt,
+    "us-wa": extract_us_wa,
     "us-wi": extract_us_wi,
     "us-wy": extract_us_wy,
 }
