@@ -52,6 +52,10 @@ from .jurisdictions.us_or.bill.scrape import OregonScraper
 from .jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
 from .jurisdictions.us_or.bill.kind import classify as classify_us_or
 from .jurisdictions.us_or.bill.citations import extract as extract_us_or
+from .jurisdictions.us_oh.bill.scrape import OhioScraper
+from .jurisdictions.us_oh.bill.status import PATTERNS as OH_PATTERNS
+from .jurisdictions.us_oh.bill.kind import classify as classify_us_oh
+from .jurisdictions.us_oh.bill.citations import extract as extract_us_oh
 
 REGISTRY: dict[str, type[BillScraper]] = {
     "us":    FederalScraper,
@@ -61,6 +65,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-md": MarylandScraper,
     "us-ks": KansasScraper,
     "us-mn": MinnesotaScraper,
+    "us-oh": OhioScraper,
     "us-or": OregonScraper,
 }
 
@@ -74,6 +79,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-md": MD_PATTERNS,
     "us-ks": KS_PATTERNS,
     "us-mn": MN_PATTERNS,
+    "us-oh": OH_PATTERNS,
     "us-or": OR_PATTERNS,
 }
 
@@ -86,6 +92,7 @@ KIND_CLASSIFIERS = {
     "us-md": classify_us_md,
     "us-ks": classify_us_ks,
     "us-mn": classify_us_mn,
+    "us-oh": classify_us_oh,
     "us-or": classify_us_or,
 }
 
@@ -98,6 +105,7 @@ CITATION_EXTRACTORS = {
     "us-md": extract_us_md,
     "us-ks": extract_us_ks,
     "us-mn": extract_us_mn,
+    "us-oh": extract_us_oh,
     "us-or": extract_us_or,
 }
 
