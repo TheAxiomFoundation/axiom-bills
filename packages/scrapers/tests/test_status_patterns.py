@@ -15,6 +15,7 @@ from axiom_bills.jurisdictions.us_federal.bill.status import (
 from axiom_bills.jurisdictions.us_ny.bill.status import PATTERNS as NY_PATTERNS
 from axiom_bills.jurisdictions.us_co.bill.status import PATTERNS as CO_PATTERNS
 from axiom_bills.jurisdictions.us_de.bill.status import PATTERNS as DE_PATTERNS
+from axiom_bills.jurisdictions.us_fl.bill.status import PATTERNS as FL_PATTERNS
 from axiom_bills.jurisdictions.us_ks.bill.status import PATTERNS as KS_PATTERNS
 from axiom_bills.jurisdictions.us_md.bill.status import PATTERNS as MD_PATTERNS
 from axiom_bills.jurisdictions.us_mn.bill.status import PATTERNS as MN_PATTERNS
@@ -75,6 +76,25 @@ def test_co_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_de_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, DE_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Filed",                                      NormalizedStatus.INTRODUCED),
+    ("Introduced",                                 NormalizedStatus.INTRODUCED),
+    ("Referred to Appropriations",                 NormalizedStatus.IN_COMMITTEE),
+    ("On Committee agenda-- Appropriations, 06/01/26",
+                                                   NormalizedStatus.IN_COMMITTEE),
+    ("CS by- Appropriations; YEAS 13 NAYS 5",      NormalizedStatus.IN_COMMITTEE),
+    ("CS by Appropriations read 1st time",         NormalizedStatus.IN_COMMITTEE),
+    ("Placed on Special Order Calendar, 06/02/26", NormalizedStatus.IN_COMMITTEE),
+    ("Passed; YEAS 36 NAYS 0",                    NormalizedStatus.PASSED_CHAMBER),
+    ("Ordered enrolled",                           NormalizedStatus.ENROLLED),
+    ("Approved by Governor",                       NormalizedStatus.SIGNED),
+    ("Chapter No. 2026-12",                        NormalizedStatus.ENACTED),
+    ("Laid on Table, refer to HB 6507",            NormalizedStatus.FAILED),
+])
+def test_fl_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, FL_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
