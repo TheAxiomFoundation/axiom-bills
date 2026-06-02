@@ -13,6 +13,8 @@ from urllib.parse import quote, urlencode
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from axiom_bills._common.base import BillScraper
 from axiom_bills._common.models import (
     Bill,
@@ -36,7 +38,7 @@ PT = ZoneInfo("America/Los_Angeles")
 class WashingtonScraper(BillScraper):
     jurisdiction = "us-wa"
     source_name = "wslwebservices.leg.wa.gov official XML web services"
-    min_interval_per_host = 0.1
+    min_interval_per_host = 0.25
 
     def __init__(self, *, biennium: str | None = None, limit: int | None = None) -> None:
         super().__init__(limit=limit)
@@ -56,26 +58,46 @@ class WashingtonScraper(BillScraper):
         bills: list[Bill] = []
         for row in rows:
             bill_number = _text(row.get("BillNumber"))
-            detail_rows = parse_legislation(
-                self.http.get(_url("LegislationService.asmx/GetLegislation", biennium=self.biennium, billNumber=bill_number)).text
-            )
+            try:
+                detail_rows = parse_legislation(
+                    self.http.get(_url(
+                        "LegislationService.asmx/GetLegislation",
+                        biennium=self.biennium,
+                        billNumber=bill_number,
+                    )).text
+                )
+            except httpx.HTTPError:
+                continue
             detail = _preferred_legislation(detail_rows) or row
             bill_id = _canonical_number(detail)
-            sponsors = parse_sponsors(
-                self.http.get(_url("LegislationService.asmx/GetSponsors", biennium=self.biennium, billId=bill_id)).text
-            )
-            actions = parse_actions(self.http.get(_url(
-                "LegislationService.asmx/GetLegislativeStatusChangesByBillNumber",
-                biennium=self.biennium,
-                billNumber=bill_number,
-                beginDate=f"{self.biennium[:4]}-01-01",
-                endDate=f"20{self.biennium[-2:]}-12-31",
-            )).text)
-            versions = parse_versions(self.http.get(_url(
-                "LegislativeDocumentService.asmx/GetDocuments",
-                biennium=self.biennium,
-                namedLike=bill_number,
-            )).text)
+            try:
+                sponsors = parse_sponsors(
+                    self.http.get(_url(
+                        "LegislationService.asmx/GetSponsors",
+                        biennium=self.biennium,
+                        billId=bill_id,
+                    )).text
+                )
+            except httpx.HTTPError:
+                sponsors = []
+            try:
+                actions = parse_actions(self.http.get(_url(
+                    "LegislationService.asmx/GetLegislativeStatusChangesByBillNumber",
+                    biennium=self.biennium,
+                    billNumber=bill_number,
+                    beginDate=f"{self.biennium[:4]}-01-01",
+                    endDate=f"20{self.biennium[-2:]}-12-31",
+                )).text)
+            except httpx.HTTPError:
+                actions = []
+            try:
+                versions = parse_versions(self.http.get(_url(
+                    "LegislativeDocumentService.asmx/GetDocuments",
+                    biennium=self.biennium,
+                    namedLike=bill_number,
+                )).text)
+            except httpx.HTTPError:
+                versions = []
             bills.append(parse_bill(detail, sponsors=sponsors, actions=actions, versions=versions, session=session))
         return ScrapeResult(jurisdiction=self.jurisdiction, session=session, bills=bills)
 
