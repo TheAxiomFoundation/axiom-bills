@@ -24,5 +24,7 @@ PATTERNS = compile_patterns([
     (r"3rd reading cal\.", NormalizedStatus.PASSED_CHAMBER),
     (r"reported and committed", NormalizedStatus.IN_COMMITTEE),
     (r"referred to", NormalizedStatus.IN_COMMITTEE),
+    (r"reference changed", NormalizedStatus.IN_COMMITTEE),
+    (r"to attorney-general for opinion", NormalizedStatus.IN_COMMITTEE),
     (r"committed to (rules|ways and means|finance)", NormalizedStatus.IN_COMMITTEE),
 ])
