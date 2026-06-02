@@ -1,0 +1,2 @@
+"""Georgia bill scraper package."""
+
