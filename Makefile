@@ -1,4 +1,4 @@
-.PHONY: migrate test api web scrape-federal scrape-ny scrape-co scrape-de scrape-ks scrape-md scrape-mn scrape-oh scrape-or scrape-sd scrape-ut scrape-wi reset-db
+.PHONY: migrate test api web scrape-federal scrape-ny scrape-co scrape-de scrape-fl scrape-ks scrape-md scrape-mn scrape-oh scrape-or scrape-sd scrape-ut scrape-wi reset-db
 
 DB := db/axiom_bills.sqlite
 
@@ -28,6 +28,9 @@ scrape-co:
 
 scrape-de:
 	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli scrape --jurisdiction us-de --limit 50
+
+scrape-fl:
+	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli scrape --jurisdiction us-fl --limit 50
 
 scrape-ks:
 	cd packages/scrapers && .venv/bin/python -m axiom_bills.cli scrape --jurisdiction us-ks --limit 50
