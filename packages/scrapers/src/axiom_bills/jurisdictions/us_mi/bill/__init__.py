@@ -1,0 +1,2 @@
+"""Michigan bill scraper package."""
+
