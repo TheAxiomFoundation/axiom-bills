@@ -24,7 +24,7 @@ axiom-bills/
 | `us`    | Congress.gov API              | Full impl   |
 | `us-ny` | legislation.nysenate.gov API  | Full impl   |
 | `us-co` | leg.colorado.gov              | Full impl   |
-| `us-mn` | revisor.mn.gov                | Stub        |
+| `us-mn` | revisor.mn.gov                | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
 
@@ -48,6 +48,7 @@ export NYSENATE_API_KEY=...   # https://legislation.nysenate.gov/
 make scrape-federal
 make scrape-ny
 make scrape-co
+make scrape-mn
 
 # 6. Two terminals:
 make api    # http://127.0.0.1:8000  (docs at /docs)
