@@ -35,6 +35,7 @@ axiom-bills/
 | `us-sd` | sdlegislature.gov official API | Full impl   |
 | `us-ut` | le.utah.gov official JSON     | Full impl   |
 | `us-wi` | docs.legis.wisconsin.gov      | Full impl   |
+| `us-wy` | wyoleg.gov official OData API | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
 

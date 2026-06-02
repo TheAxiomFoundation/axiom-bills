@@ -25,6 +25,7 @@ from axiom_bills.jurisdictions.us_or.bill.status import PATTERNS as OR_PATTERNS
 from axiom_bills.jurisdictions.us_sd.bill.status import PATTERNS as SD_PATTERNS
 from axiom_bills.jurisdictions.us_ut.bill.status import PATTERNS as UT_PATTERNS
 from axiom_bills.jurisdictions.us_wi.bill.status import PATTERNS as WI_PATTERNS
+from axiom_bills.jurisdictions.us_wy.bill.status import PATTERNS as WY_PATTERNS
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -236,3 +237,30 @@ def test_ut_patterns(text: str, expected: NormalizedStatus) -> None:
 ])
 def test_wi_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, WI_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Bill Number Assigned",                    NormalizedStatus.INTRODUCED),
+    ("H Received for Introduction",             NormalizedStatus.INTRODUCED),
+    ("H Introduced and Referred to H09 - Minerals 59-2-1-0-0",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("H09 - Minerals:Recommend Amend and Do Pass 9-0-0-0-0",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("H COW:Passed",                           NormalizedStatus.IN_COMMITTEE),
+    ("S Appointed JCC01 Members",              NormalizedStatus.IN_COMMITTEE),
+    ("H Received for Concurrence",             NormalizedStatus.IN_COMMITTEE),
+    (":Rerefer to S02 - Appropriations",       NormalizedStatus.IN_COMMITTEE),
+    ("H 3rd Reading:Laid Back",                NormalizedStatus.IN_COMMITTEE),
+    ("S 3rd Reading:Passed 31-0-0-0-0",        NormalizedStatus.PASSED_CHAMBER),
+    ("H Concur:Passed 60-0-2-0-0",             NormalizedStatus.PASSED_CHAMBER),
+    ("H Speaker Signed HEA No. 0016",          NormalizedStatus.ENROLLED),
+    ("Governor Signed HEA No. 0016",           NormalizedStatus.SIGNED),
+    ("Assigned Chapter Number 42",             NormalizedStatus.ENACTED),
+    ("H See Mirror Bill SF0001",               NormalizedStatus.FAILED),
+    ("H No report prior to CoW Cutoff",        NormalizedStatus.FAILED),
+    ("H Did not Consider for Introduction",    NormalizedStatus.FAILED),
+    ("S Motion to Suspend Rules Failed 13-18-0-0-0",
+                                                NormalizedStatus.FAILED),
+])
+def test_wy_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, WY_PATTERNS) == expected
