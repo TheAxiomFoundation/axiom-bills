@@ -22,6 +22,7 @@ axiom-bills/
 | Code    | Source                        | Status      |
 |---------|-------------------------------|-------------|
 | `us`    | Congress.gov API              | Full impl   |
+| `us-ak` | akleg.gov BASIS               | Full impl   |
 | `us-ny` | legislation.nysenate.gov API  | Full impl   |
 | `us-co` | leg.colorado.gov              | Full impl   |
 | `us-de` | legis.delaware.gov JSON feeds | Full impl   |

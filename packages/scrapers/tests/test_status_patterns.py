@@ -9,6 +9,7 @@ import pytest
 from axiom_bills._common.models import NormalizedStatus
 from axiom_bills._common.status import match_first
 
+from axiom_bills.jurisdictions.us_ak.bill.status import PATTERNS as AK_PATTERNS
 from axiom_bills.jurisdictions.us_federal.bill.status import (
     PATTERNS as FEDERAL_PATTERNS,
 )
@@ -44,6 +45,32 @@ from axiom_bills.jurisdictions.us_wy.bill.status import PATTERNS as WY_PATTERNS
 ])
 def test_federal_patterns(text: str, expected: NormalizedStatus) -> None:
     assert match_first(text, FEDERAL_PATTERNS) == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("(H) READ THE FIRST TIME - REFERRALS",     NormalizedStatus.IN_COMMITTEE),
+    ("(H) Moved CSHB 1(STA) Out of Committee", NormalizedStatus.IN_COMMITTEE),
+    ("(H) FINANCE at 01:30 PM ADAMS 519",      NormalizedStatus.IN_COMMITTEE),
+    ("(H) Minutes (HSTA)",                      NormalizedStatus.IN_COMMITTEE),
+    ("(H) FN1: ZERO(ADM)",                      NormalizedStatus.IN_COMMITTEE),
+    ("(S) TITLE CHANGE: SCR 10",                NormalizedStatus.IN_COMMITTEE),
+    ("(H) TRANSMITTED TO (S)",                  NormalizedStatus.PASSED_CHAMBER),
+    ("(H) CONCUR AM OF (S) Y40",                NormalizedStatus.PASSED_CHAMBER),
+    ("(S) READ THE THIRD TIME CSHB 1(STA)",     NormalizedStatus.IN_COMMITTEE),
+    ("(H) FISHERIES at 10:00 AM GRUENBERG 120", NormalizedStatus.IN_COMMITTEE),
+    ("(S) YUNDT, CRONK, KAUFMAN",               NormalizedStatus.IN_COMMITTEE),
+    ("(H) AM 1 TO AM 2 ADOPTED Y30 N9 E1",     NormalizedStatus.IN_COMMITTEE),
+    ("(H) ...CHANGES TECHNICAL TITLE OF LEGISLATION",
+                                                NormalizedStatus.IN_COMMITTEE),
+    ("(H) PASSED Y40",                         NormalizedStatus.PASSED_CHAMBER),
+    ("(H) 2:55 P.M. 5/13/26 TRANSMITTED TO GOVERNOR",
+                                                NormalizedStatus.ENROLLED),
+    ("(H) AWAITING TRANSMITTAL TO GOV",         NormalizedStatus.ENROLLED),
+    ("(H) LAW W/O GOV SIGNATURE 5/29 CH 6 SLA 26",
+                                                NormalizedStatus.ENACTED),
+])
+def test_ak_patterns(text: str, expected: NormalizedStatus) -> None:
+    assert match_first(text, AK_PATTERNS) == expected
 
 
 @pytest.mark.parametrize("text,expected", [
