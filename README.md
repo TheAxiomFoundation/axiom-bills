@@ -27,6 +27,7 @@ axiom-bills/
 | `us-de` | legis.delaware.gov JSON feeds | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
+| `us-or` | Oregon OLIS OData API         | Full impl   |
 
 ## Quickstart (no Docker, SQLite under the hood)
 
@@ -53,6 +54,7 @@ make scrape-co
 make scrape-de
 make scrape-md
 make scrape-mn
+make scrape-or
 
 # 6. Two terminals:
 make api    # http://127.0.0.1:8000  (docs at /docs)
