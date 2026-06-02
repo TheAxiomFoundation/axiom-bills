@@ -44,6 +44,10 @@ from .jurisdictions.us_ct.bill.scrape import ConnecticutScraper
 from .jurisdictions.us_ct.bill.status import PATTERNS as CT_PATTERNS
 from .jurisdictions.us_ct.bill.kind import classify as classify_us_ct
 from .jurisdictions.us_ct.bill.citations import extract as extract_us_ct
+from .jurisdictions.us_dc.bill.scrape import DistrictOfColumbiaScraper
+from .jurisdictions.us_dc.bill.status import PATTERNS as DC_PATTERNS
+from .jurisdictions.us_dc.bill.kind import classify as classify_us_dc
+from .jurisdictions.us_dc.bill.citations import extract as extract_us_dc
 from .jurisdictions.us_federal.bill.scrape import FederalScraper
 from .jurisdictions.us_federal.bill.status import PATTERNS as FEDERAL_PATTERNS
 from .jurisdictions.us_federal.bill.kind import classify as classify_us
@@ -133,6 +137,7 @@ REGISTRY: dict[str, type[BillScraper]] = {
     "us-az": ArizonaScraper,
     "us-ca": CaliforniaScraper,
     "us-ct": ConnecticutScraper,
+    "us-dc": DistrictOfColumbiaScraper,
     "us-ny": NewYorkScraper,
     "us-co": ColoradoScraper,
     "us-de": DelawareScraper,
@@ -164,6 +169,7 @@ PATTERNS_BY_JURISDICTION = {
     "us-az": AZ_PATTERNS,
     "us-ca": CA_PATTERNS,
     "us-ct": CT_PATTERNS,
+    "us-dc": DC_PATTERNS,
     "us-ny": NY_PATTERNS,
     "us-co": CO_PATTERNS,
     "us-de": DE_PATTERNS,
@@ -194,6 +200,7 @@ KIND_CLASSIFIERS = {
     "us-az": classify_us_az,
     "us-ca": classify_us_ca,
     "us-ct": classify_us_ct,
+    "us-dc": classify_us_dc,
     "us-ny": classify_us_ny,
     "us-co": classify_us_co,
     "us-de": classify_us_de,
@@ -224,6 +231,7 @@ CITATION_EXTRACTORS = {
     "us-az": extract_us_az,
     "us-ca": extract_us_ca,
     "us-ct": extract_us_ct,
+    "us-dc": extract_us_dc,
     "us-ny": extract_us_ny,
     "us-co": extract_us_co,
     "us-de": extract_us_de,
