@@ -26,6 +26,7 @@ axiom-bills/
 | `us-co` | leg.colorado.gov              | Full impl   |
 | `us-de` | legis.delaware.gov JSON feeds | Full impl   |
 | `us-fl` | flsenate.gov                  | Full impl   |
+| `us-id` | legislature.idaho.gov         | Full impl   |
 | `us-ks` | Kansas KLISS REST API         | Full impl   |
 | `us-md` | mgaleg.maryland.gov JSON data | Full impl   |
 | `us-mn` | revisor.mn.gov                | Full impl   |
@@ -59,6 +60,7 @@ make scrape-ny
 make scrape-co
 make scrape-de
 make scrape-fl
+make scrape-id
 make scrape-ks
 make scrape-md
 make scrape-mn
