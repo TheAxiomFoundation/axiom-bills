@@ -8,6 +8,9 @@ axiom-bills list
 """
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import click
 
 from ._common.base import BillScraper
@@ -481,10 +484,12 @@ def list_jurisdictions() -> None:
               help="Federal-only: scrape specific bills by id like "
                    "'hr/7024' (repeatable). When set, skips the "
                    "recent-updates listing.")
+@click.option("--since", default=None,
+              help="Federal-only: only scrape bills updated at or after this ISO timestamp.")
 @click.option("--dry-run", is_flag=True,
               help="Scrape but do not write to Postgres.")
 def scrape(jurisdiction: str, limit: int | None, congress: int | None,
-           bill: tuple[str, ...], dry_run: bool) -> None:
+           bill: tuple[str, ...], since: str | None, dry_run: bool) -> None:
     """Run a scraper end-to-end."""
     cls = REGISTRY[jurisdiction]
     kwargs: dict = {"limit": limit}
@@ -492,7 +497,10 @@ def scrape(jurisdiction: str, limit: int | None, congress: int | None,
         kwargs["congress"] = congress
     if bill and jurisdiction == "us":
         kwargs["bill_ids"] = list(bill)
-    if jurisdiction == "us" and not bill:
+    if since and jurisdiction == "us":
+        kwargs["since"] = _parse_since_cursor(since)
+        click.echo(f"Refresh since {kwargs['since'].isoformat()}.")
+    elif jurisdiction == "us" and not bill:
         # Routine refresh: cap the pagination using the last successful
         # scrape as a since-cursor. A targeted --bill run skips this so
         # backfills aren't accidentally clipped.
@@ -527,6 +535,13 @@ def scrape(jurisdiction: str, limit: int | None, congress: int | None,
         f"Wrote: bills_seen={counts['bills_seen']} "
         f"bills_new={counts['bills_new']} actions_new={counts['actions_new']}"
     )
+
+
+def _parse_since_cursor(value: str) -> datetime:
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    return dt
 
 
 @main.command()
