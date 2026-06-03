@@ -47,7 +47,7 @@ class NewHampshireListItem:
 class NewHampshireScraper(BillScraper):
     jurisdiction = "us-nh"
     source_name = "gc.nh.gov official New Hampshire Bill Status pages"
-    min_interval_per_host = 0.25
+    min_interval_per_host = 0.05
 
     def __init__(
         self,
@@ -68,7 +68,11 @@ class NewHampshireScraper(BillScraper):
                 break
             detail_url = _detail_url(bill_id)
             try:
-                detail_html = self.http.get(detail_url).text
+                detail_html = (
+                    self.http.get(detail_url).text
+                    if self.limit is not None
+                    else self._get_detail_once(detail_url)
+                )
             except httpx.HTTPError:
                 continue
             item = list_item_from_detail(detail_html, detail_url)
@@ -77,6 +81,13 @@ class NewHampshireScraper(BillScraper):
             bills.append(parse_bill(item, detail_html, session=session))
         bills.sort(key=lambda bill: _number_sort_key(bill.number))
         return ScrapeResult(jurisdiction=self.jurisdiction, session=session, bills=bills)
+
+    def _get_detail_once(self, detail_url: str) -> str:
+        self.http._wait_for(detail_url)
+        response = self.http._client.get(detail_url)
+        if response.status_code >= 500 or response.status_code == 429:
+            response.raise_for_status()
+        return response.text
 
 
 def session_for_years(start_year: int, end_year: int) -> Session:

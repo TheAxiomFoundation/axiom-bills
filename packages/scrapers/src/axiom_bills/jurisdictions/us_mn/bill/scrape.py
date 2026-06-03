@@ -41,7 +41,7 @@ ACTION_COMPACT_RE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s+(.+)$")
 class MinnesotaScraper(BillScraper):
     jurisdiction = "us-mn"
     source_name = "revisor.mn.gov"
-    min_interval_per_host = 1.5
+    min_interval_per_host = 0.15
 
     def scrape(self) -> ScrapeResult:
         session = _current_session()

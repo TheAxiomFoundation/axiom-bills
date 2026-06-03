@@ -60,6 +60,9 @@ class OklahomaScraper(BillScraper):
         for item in items:
             if self.limit is not None and len(bills) >= self.limit:
                 break
+            if self.limit is None:
+                bills.append(parse_bill_from_status_item(item, session=session))
+                continue
             html = self.http.get(item.source_url).text
             bills.append(parse_bill(item, detail_html=html, session=session))
         bills.sort(key=lambda bill: _number_sort_key(bill.number))
@@ -180,6 +183,25 @@ def parse_bill(item: OklahomaListItem, *, detail_html: str, session: Session) ->
         actions=actions,
         versions=parse_versions(tree),
         kind=classify_kind(text_for_kind),
+    )
+
+
+def parse_bill_from_status_item(item: OklahomaListItem, *, session: Session) -> Bill:
+    actions = [_action_from_status_item(item)] if item.status_date is not None and item.status else []
+    title = item.title or item.number
+    return Bill(
+        jurisdiction=OklahomaScraper.jurisdiction,
+        session_name=session.name,
+        chamber=_chamber_for_number(item.number),
+        number=item.number,
+        title=title,
+        summary=title,
+        subjects=[],
+        sponsors=[],
+        source_url=item.source_url,
+        actions=actions,
+        versions=[],
+        kind=classify_kind(" ".join(part for part in (title, item.status) if part)),
     )
 
 
