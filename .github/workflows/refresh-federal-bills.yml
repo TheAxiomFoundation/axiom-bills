@@ -1,0 +1,140 @@
+name: Refresh federal bills
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Optional ISO timestamp cursor. Defaults to Supabase max last_scraped_at."
+        required: false
+        type: string
+      limit:
+        description: "Optional bill limit for smoke tests."
+        required: false
+        type: string
+      full_refresh:
+        description: "Set to true to ignore the Supabase cursor."
+        required: false
+        default: "false"
+        type: string
+      fetch_texts:
+        description: "Set to false to skip fetching bill text/diffs."
+        required: false
+        default: "true"
+        type: string
+  schedule:
+    - cron: "7 * * * *"
+
+concurrency:
+  group: refresh-federal-bills
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      REQUESTED_SINCE: ${{ inputs.since || '' }}
+      REQUESTED_LIMIT: ${{ inputs.limit || '' }}
+      FULL_REFRESH: ${{ inputs.full_refresh || 'false' }}
+      FETCH_TEXTS: ${{ inputs.fetch_texts || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Migrate local SQLite
+        run: make migrate
+
+      - name: Determine federal cursor
+        id: cursor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CONGRESS_API_KEY:-}" ]]; then
+            echo "::warning::Skipping federal refresh: CONGRESS_API_KEY is not configured."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          if [[ "$FULL_REFRESH" == "true" ]]; then
+            echo "since=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$REQUESTED_SINCE" ]]; then
+            printf 'since=%s\n' "$REQUESTED_SINCE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          since="$(
+            uv run --project packages/scrapers python - <<'PY'
+          import os
+          import sys
+          import httpx
+
+          url = os.environ["SUPABASE_URL"].rstrip("/")
+          key = os.environ["SUPABASE_SERVICE_KEY"]
+          headers = {
+              "apikey": key,
+              "Authorization": f"Bearer {key}",
+              "Accept-Profile": "bills",
+          }
+          params = {
+              "select": "last_scraped_at",
+              "jurisdiction": "eq.us",
+              "order": "last_scraped_at.desc",
+              "limit": "1",
+          }
+          response = httpx.get(
+              f"{url}/rest/v1/bills",
+              params=params,
+              headers=headers,
+              timeout=30,
+          )
+          if response.status_code >= 300:
+              print(response.text[:500], file=sys.stderr)
+              response.raise_for_status()
+          rows = response.json()
+          if rows:
+              print(rows[0]["last_scraped_at"])
+          PY
+          )"
+          printf 'since=%s\n' "$since" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh federal bills
+        if: steps.cursor.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          scrape_args=(--jurisdiction us)
+          if [[ -n "${{ steps.cursor.outputs.since }}" ]]; then
+            scrape_args+=(--since "${{ steps.cursor.outputs.since }}")
+          fi
+          if [[ -n "$REQUESTED_LIMIT" ]]; then
+            scrape_args+=(--limit "$REQUESTED_LIMIT")
+          fi
+
+          echo "Starting federal refresh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          uv run --project packages/scrapers axiom-bills scrape "${scrape_args[@]}"
+          uv run --project packages/scrapers axiom-bills reclassify --jurisdiction us
+          uv run --project packages/scrapers axiom-bills reclassify-kinds --jurisdiction us
+          if [[ "$FETCH_TEXTS" != "false" ]]; then
+            uv run --project packages/scrapers axiom-bills fetch-texts --jurisdiction us
+            uv run --project packages/scrapers axiom-bills precompute-diffs --jurisdiction us
+          fi
+          uv run --project packages/scrapers axiom-bills extract-citations --jurisdiction us
+          uv run --project packages/scrapers axiom-bills sync-supabase
+          echo "Finished federal refresh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
