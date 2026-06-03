@@ -168,7 +168,7 @@ class FederalScraper(BillScraper):
                 "format": "json",
                 "limit": page_size,
                 "offset": offset,
-                "sort": "updateDate+desc",
+                "sort": "updateDate desc",
             }
             payload = self.http.get_json(url, params=params)
             stubs = payload.get("bills", [])
