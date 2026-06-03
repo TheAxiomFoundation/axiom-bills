@@ -96,6 +96,7 @@ def _remote_rows_by_in(
             {
                 "select": select,
                 column: f"in.({','.join(batch)})",
+                "order": "id.asc",
             },
         ))
     return rows
@@ -168,13 +169,40 @@ def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
         (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]): r["id"]
         for r in remote_rows
     }
-    return {
+    mapped = {
         r["id"]: existing.get(
             (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]),
             r["id"],
         )
         for r in rows
     }
+    missing_rows = [r for r in rows if mapped[r["id"]] == r["id"]]
+    if not missing_rows:
+        return mapped
+
+    # Large refreshes can span thousands of bills; keep a second lookup by
+    # jurisdiction so an incomplete session-id page cannot make an upsert
+    # rewrite a bill primary key that child rows already reference.
+    jurisdiction_rows = _remote_rows_by_in(
+        client,
+        "bills",
+        select="id,jurisdiction,session_id,chamber,number",
+        column="jurisdiction",
+        values=(r["jurisdiction"] for r in missing_rows),
+    )
+    fallback: dict[tuple[Any, ...], str | None] = {}
+    for r in jurisdiction_rows:
+        key = (r["jurisdiction"], r["chamber"], r["number"])
+        if key in fallback:
+            fallback[key] = None
+        else:
+            fallback[key] = r["id"]
+
+    for r in missing_rows:
+        key = (r["jurisdiction"], r["chamber"], r["number"])
+        if fallback.get(key):
+            mapped[r["id"]] = fallback[key]
+    return mapped
 
 
 def _remote_child_ids(
