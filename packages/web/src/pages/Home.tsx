@@ -1,16 +1,17 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Jurisdiction } from "../lib/api";
+import { errorMessage } from "../lib/errors";
 
 export function Home() {
   const [data, setData] = useState<Jurisdiction[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.jurisdictions().then(setData).catch((e) => setErr(String(e)));
+    api.jurisdictions().then(setData).catch((e) => setErr(errorMessage(e)));
   }, []);
 
-  if (err) return <p className="error">API unreachable — is uvicorn running? ({err})</p>;
+  if (err) return <p className="error">Couldn’t load jurisdictions: {err}</p>;
   if (!data) return <p>Loading…</p>;
 
   const federal = data.filter((j) => j.level === "federal");
