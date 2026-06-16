@@ -13,6 +13,7 @@ import { RelevanceFilter } from "../components/RelevanceFilter";
 import { StatusBadge } from "../components/StatusBadge";
 import { StatusFilter } from "../components/StatusFilter";
 import { fmtDate, KIND_LABEL } from "../lib/format";
+import { errorMessage } from "../lib/errors";
 
 export function JurisdictionPage() {
   const { code = "" } = useParams();
@@ -36,7 +37,7 @@ export function JurisdictionPage() {
       relevance,
     })
       .then((r) => setBills(r.bills))
-      .catch((e) => setErr(String(e)));
+      .catch((e) => setErr(errorMessage(e)));
   }, [code, statusFilter, kinds, relevance]);
 
   return (

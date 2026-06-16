@@ -4,6 +4,7 @@ import { api, type BillDetail } from "../lib/api";
 import { BillDiffs } from "../components/BillDiffs";
 import { StatusBadge } from "../components/StatusBadge";
 import { fmtDate, KIND_LABEL } from "../lib/format";
+import { errorMessage } from "../lib/errors";
 
 // Turn GPO plain-text into proper paragraphs.
 //
@@ -126,7 +127,7 @@ export function BillPage() {
   const [activeTextIdx, setActiveTextIdx] = useState(0);
 
   useEffect(() => {
-    api.bill(billId).then(setBill).catch((e) => setErr(String(e)));
+    api.bill(billId).then(setBill).catch((e) => setErr(errorMessage(e)));
   }, [billId]);
 
   // Whenever we navigate to a different bill, collapse the text panel
