@@ -14,6 +14,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { StatusFilter } from "../components/StatusFilter";
 import { fmtDate, KIND_LABEL } from "../lib/format";
 import { errorMessage } from "../lib/errors";
+import { retry } from "../lib/retry";
 
 export function JurisdictionPage() {
   const { code = "" } = useParams();
@@ -26,16 +27,17 @@ export function JurisdictionPage() {
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.kindCounts(code).then(setCounts).catch(() => setCounts(undefined));
+    retry(() => api.kindCounts(code)).then(setCounts).catch(() => setCounts(undefined));
   }, [code]);
 
   useEffect(() => {
     setBills(null);
-    api.bills(code, {
+    setErr(null);
+    retry(() => api.bills(code, {
       status: statusFilter || undefined,
       kind: kinds,
       relevance,
-    })
+    }))
       .then((r) => setBills(r.bills))
       .catch((e) => setErr(errorMessage(e)));
   }, [code, statusFilter, kinds, relevance]);

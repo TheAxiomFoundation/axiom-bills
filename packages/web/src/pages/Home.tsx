@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Jurisdiction } from "../lib/api";
 import { errorMessage } from "../lib/errors";
+import { retry } from "../lib/retry";
 
 export function Home() {
   const [data, setData] = useState<Jurisdiction[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    api.jurisdictions().then(setData).catch((e) => setErr(errorMessage(e)));
+    retry(() => api.jurisdictions()).then(setData).catch((e) => setErr(errorMessage(e)));
   }, []);
 
   if (err) return <p className="error">Couldn’t load jurisdictions: {err}</p>;

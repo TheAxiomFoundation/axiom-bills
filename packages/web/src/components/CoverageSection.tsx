@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Coverage, type CoverageSummary } from "../lib/api";
+import { retry } from "../lib/retry";
 
 const COVERAGE_LABEL: Record<Coverage, string> = {
   full:    "Wired up",
@@ -15,7 +16,7 @@ const COVERAGE_DESC: Record<Coverage, string> = {
 
 export function CoverageSection() {
   const [data, setData] = useState<CoverageSummary | null>(null);
-  useEffect(() => { api.coverage().then(setData).catch(() => setData(null)); }, []);
+  useEffect(() => { retry(() => api.coverage()).then(setData).catch(() => setData(null)); }, []);
 
   if (!data) return null;
 
