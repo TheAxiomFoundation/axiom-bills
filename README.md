@@ -120,8 +120,15 @@ npm run dev                                  # http://127.0.0.1:5180
 #    - New project pointing at packages/web/
 #    - vercel.json (already committed) declares the Vite framework
 #    - Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in env vars
-#    - Push to main → Vercel deploys automatically
+#    - Push to main → the Deploy web workflow ships to production
+#      (.github/workflows/deploy-web.yml; needs the VERCEL_TOKEN secret)
 ```
+
+Production deploys run from `.github/workflows/deploy-web.yml` on every
+push to `main` that touches `packages/web/`. It needs one repo secret,
+`VERCEL_TOKEN` (create at https://vercel.com/account/tokens). Until that
+secret is set the workflow skips with a warning; deploy manually in the
+meantime with `cd packages/web && vercel --prod`.
 
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.
