@@ -1666,3 +1666,62 @@ table.bills td a:hover { color: var(--color-accent); }
 }
 .yaml-diff .added   { background: #e9f5e0; }
 .yaml-diff .removed { background: #fde0d8; }
+
+/* ───────── table scroll wrapper ─────────
+   Wraps the bills table so that, when it can't fit the viewport, the
+   table scrolls horizontally inside its own contained region instead of
+   pushing the page wider (body has overflow-x: hidden, which would
+   otherwise just clip the right-hand columns). On desktop the table
+   fits within the 1500px app width, so this is a transparent no-op. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ───────── responsive: tablet ───────── */
+@media (max-width: 768px) {
+  .app { padding-left: 24px; padding-right: 24px; }
+
+  /* Three-up stat blocks get cramped before they get a phone layout. */
+  .coverage-totals { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ───────── responsive: phone ───────── */
+@media (max-width: 560px) {
+  .app { padding-left: 16px; padding-right: 16px; padding-bottom: 64px; }
+
+  /* Brand + nav stack so the nav links don't collide with the wordmark. */
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .topbar nav { gap: 16px; }
+
+  h1 { font-size: 1.6rem; }
+  .bill-title { font-size: 22px; }
+  .bill-header h1 { font-size: 22px; }
+
+  /* Keep the table readable: a touch less cell padding so more of each
+     column is visible, and the wrapper above lets the rest scroll. */
+  table.bills th, table.bills td { padding: 10px 12px; }
+  .title-cell { max-width: none; }
+
+  /* Stat-block grids collapse to a single column on phones. */
+  .coverage-totals,
+  .rules-totals { grid-template-columns: 1fr; }
+
+  /* Side-by-side comparison panes stack vertically. */
+  .ba-pair,
+  .yaml-diff { grid-template-columns: 1fr; }
+
+  /* Timeline: drop the fixed 140px date rail; date sits above the entry. */
+  .timeline li { grid-template-columns: 1fr; gap: 4px; }
+
+  /* The reading pane shouldn't carry desktop-sized gutters on a phone. */
+  .bill-text-box { padding: 20px 18px; }
+
+  /* Diff side rail un-sticks and flows under the main column (the diff
+     layout already collapses to one column at 900px). */
+  .diff-rail { position: static; }
+}
