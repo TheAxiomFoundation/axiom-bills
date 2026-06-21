@@ -293,18 +293,53 @@ async function kindCounts(code: string): Promise<KindCounts> {
   return out;
 }
 
+// Best-effort matched summary for a page of bills, computed server-side by
+// the bills.bill_list_summary view (never ships diffs over the wire). If the
+// view isn't present yet, or the call fails, we degrade gracefully: the list
+// still renders, just without the Corpus/RuleSpec chips. Bounded to the ids
+// actually on screen so the jsonb work stays cheap.
+type MatchedSummary = { matched_encodings: MatchedEncoding[]; matched_corpus: MatchedCorpus[] };
+
+async function fetchMatchedSummary(ids: string[]): Promise<Map<string, MatchedSummary>> {
+  const out = new Map<string, MatchedSummary>();
+  if (ids.length === 0) return out;
+  try {
+    const { data, error } = await supabase
+      .from("bill_list_summary")
+      .select("id, matched_encodings, matched_corpus")
+      .in("id", ids);
+    if (error || !data) return out;
+    for (const r of data as any[]) {
+      const matched_corpus = ((r.matched_corpus ?? []) as MatchedCorpus[]).map((c) => ({
+        ...c,
+        axiom_url: c.axiom_url ?? `${AXIOM_APP_URL}/${c.citation_path}`,
+      }));
+      out.set(r.id, {
+        matched_encodings: (r.matched_encodings ?? []) as MatchedEncoding[],
+        matched_corpus,
+      });
+    }
+  } catch {
+    // Network/transient/view-missing — list renders without matched chips.
+  }
+  return out;
+}
+
 async function bills(
   code: string,
   opts: { status?: NormalizedStatus; kind?: BillKind[]; relevance?: Relevance } = {},
 ): Promise<{ bills: BillRow[]; applied_kinds: BillKind[]; applied_relevance: Relevance }> {
+  // The list query stays deliberately lean: it must NOT select the heavy
+  // `diffs` JSONB or embed every action. Pulling diffs for up to 500 rows
+  // blew past Supabase's statement timeout on large jurisdictions (federal)
+  // and returned a 500. The derived matched_* data comes from a cheap
+  // server-side summary instead (see fetchMatchedSummary).
   let q = supabase
     .from("bills")
     .select(`
       id, number, title, chamber, kind, current_status, current_status_at,
-      first_seen_at, source_url, session_id, diffs,
-      sessions:session_id (name),
-      bill_actions (occurred_at),
-      bill_citations (citation)
+      first_seen_at, source_url, session_id,
+      sessions:session_id (name)
     `)
     .eq("jurisdiction", code);
 
@@ -316,36 +351,25 @@ async function bills(
   const { data: rows, error } = await q.limit(500);
   if (error) throw error;
 
-  // Pull all encodings once and join client-side.
-  const { data: encodings } = await supabase
-    .from("axiom_encodings")
-    .select("repo, kind, citation, file_path");
+  const matched = await fetchMatchedSummary((rows ?? []).map((r: any) => r.id));
 
   const relevance: Relevance = opts.relevance ?? "any";
   const billsOut: BillRow[] = [];
   for (const r of rows ?? []) {
-    const latest_action_at = (r.bill_actions ?? [])
-      .map((a: any) => a.occurred_at)
-      .sort()
-      .pop() ?? null;
-    const sessionName = (r as any).sessions?.name ?? "";
-    const { matched_encodings, matched_corpus } = buildMatchedForBill(
-      r.diffs as BillDiffs | null,
-      (r.bill_citations ?? []) as { citation: string }[],
-      (encodings ?? []) as any,
-    );
-    if (relevance === "touches_corpus" && matched_corpus.length === 0) continue;
-    if (relevance === "touches_rulespec" && matched_encodings.length === 0) continue;
+    const m = matched.get(r.id) ?? { matched_encodings: [], matched_corpus: [] };
+    if (relevance === "touches_corpus" && m.matched_corpus.length === 0) continue;
+    if (relevance === "touches_rulespec" && m.matched_encodings.length === 0) continue;
     billsOut.push({
       id: r.id, number: r.number, title: r.title, chamber: r.chamber,
       kind: r.kind as BillKind,
       current_status: r.current_status as NormalizedStatus,
       current_status_at: r.current_status_at,
-      latest_action_at,
+      latest_action_at: r.current_status_at ?? null,
       first_seen_at: r.first_seen_at,
       source_url: r.source_url,
-      session_name: sessionName,
-      matched_encodings, matched_corpus,
+      session_name: (r as any).sessions?.name ?? "",
+      matched_encodings: m.matched_encodings,
+      matched_corpus: m.matched_corpus,
     });
   }
   return { bills: billsOut, applied_kinds: kinds, applied_relevance: relevance };
