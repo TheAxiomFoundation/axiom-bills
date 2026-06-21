@@ -31,7 +31,10 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # Cap runtime so a wedged run can't hold the (cancel-in-progress: false)
+    # queue for hours. Incremental hourly refreshes finish in minutes; a rare
+    # manual full_refresh that needs longer can be re-run or bumped.
+    timeout-minutes: 60
     env:
       CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

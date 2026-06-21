@@ -35,7 +35,10 @@ jobs:
   refresh:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # Cap runtime so a wedged run can't hold the (cancel-in-progress: false)
+    # queue for hours. Incremental hourly refreshes finish in minutes; a rare
+    # manual full_refresh that needs longer can be re-run or bumped.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 6
