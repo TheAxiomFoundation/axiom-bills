@@ -18,11 +18,43 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
+
+
+# Supabase/PostgREST occasionally times out or returns a transient 5xx on a
+# big write (large bills batches carry the diffs JSONB). Retry those with
+# backoff so a single blip doesn't fail the whole nightly refresh.
+_RETRY_STATUS = {408, 429, 502, 503, 504}
+
+
+def _send_with_retry(
+    send: Callable[[], httpx.Response],
+    *,
+    what: str,
+    attempts: int = 4,
+    base_delay: float = 2.0,
+) -> httpx.Response:
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = send()
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt == attempts - 1:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+            continue
+        if resp.status_code in _RETRY_STATUS and attempt < attempts - 1:
+            time.sleep(base_delay * (2 ** attempt))
+            continue
+        return resp
+    assert last_exc is not None
+    raise last_exc
 
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -61,10 +93,13 @@ def _select_all(client: httpx.Client, table: str, params: dict[str, str]) -> lis
     start = 0
     while True:
         end = start + page_size - 1
-        resp = client.get(
-            f"/{table}",
-            params=params,
-            headers={"Range": f"{start}-{end}"},
+        resp = _send_with_retry(
+            lambda: client.get(
+                f"/{table}",
+                params=params,
+                headers={"Range": f"{start}-{end}"},
+            ),
+            what=f"read {table}",
         )
         if resp.status_code >= 300:
             raise RuntimeError(
@@ -111,7 +146,11 @@ def _upsert(client: httpx.Client, table: str, rows: list[dict], *,
         params = {}
         if on_conflict:
             params["on_conflict"] = on_conflict
-        resp = client.post(f"/{table}", params=params, content=json.dumps(batch))
+        payload = json.dumps(batch)
+        resp = _send_with_retry(
+            lambda: client.post(f"/{table}", params=params, content=payload),
+            what=f"write {table}",
+        )
         if resp.status_code >= 300:
             raise RuntimeError(
                 f"Supabase write to {table} failed ({resp.status_code}): "
@@ -294,9 +333,12 @@ def sync(db_path: str) -> dict[str, int]:
         bill_id_map = _remote_bill_ids(client, bills_rows)
         for row in bills_rows:
             row["id"] = bill_id_map[row["id"]]
+        # Small chunk: each bill row carries the diffs JSONB, so big batches
+        # produce multi-MB request bodies that time out server-side.
         counts["bills"] = _upsert(
             client, "bills", bills_rows,
             on_conflict="jurisdiction,session_id,chamber,number",
+            chunk=50,
         )
 
         # 4. Bill actions
