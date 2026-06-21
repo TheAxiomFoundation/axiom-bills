@@ -60,6 +60,7 @@ export function JurisdictionPage() {
           <p className="hint">No bills match. If counts are zero everywhere, run the scraper first:
             <br/><code>axiom-bills scrape --jurisdiction {code} --limit 50</code></p>
         ) : (
+          <div className="table-scroll">
           <table className="bills">
             <thead>
               <tr>
@@ -154,6 +155,7 @@ export function JurisdictionPage() {
               ))}
             </tbody>
           </table>
+          </div>
         )
       )}
     </div>
