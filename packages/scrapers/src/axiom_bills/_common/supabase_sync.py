@@ -197,12 +197,19 @@ def _remote_session_ids(client: httpx.Client, local_rows: list[sqlite3.Row]) -> 
 
 
 def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
+    # Look up existing remote bills by JURISDICTION, not session_id.
+    # bills.session_id has no index, so a `session_id=in.(...)` lookup is a
+    # full-table sequential scan that timed out (57014) once the table grew.
+    # jurisdiction is indexed (idx_bills_jurisdiction_status), and a sync only
+    # ever covers a single jurisdiction, so this one query is both fast and
+    # sufficient — we derive the precise key match and the ambiguity-safe
+    # fallback from the same rows instead of issuing a second query.
     remote_rows = _remote_rows_by_in(
         client,
         "bills",
         select="id,jurisdiction,session_id,chamber,number",
-        column="session_id",
-        values=(r["session_id"] for r in rows),
+        column="jurisdiction",
+        values=(r["jurisdiction"] for r in rows),
     )
     existing = {
         (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]): r["id"]
@@ -219,18 +226,12 @@ def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
     if not missing_rows:
         return mapped
 
-    # Large refreshes can span thousands of bills; keep a second lookup by
-    # jurisdiction so an incomplete session-id page cannot make an upsert
-    # rewrite a bill primary key that child rows already reference.
-    jurisdiction_rows = _remote_rows_by_in(
-        client,
-        "bills",
-        select="id,jurisdiction,session_id,chamber,number",
-        column="jurisdiction",
-        values=(r["jurisdiction"] for r in missing_rows),
-    )
+    # Fallback for bills whose remote session_id differs from the local one
+    # (session re-keying): match on (jurisdiction, chamber, number) when it's
+    # unambiguous, so an upsert can't rewrite a bill PK that child rows
+    # already reference.
     fallback: dict[tuple[Any, ...], str | None] = {}
-    for r in jurisdiction_rows:
+    for r in remote_rows:
         key = (r["jurisdiction"], r["chamber"], r["number"])
         if key in fallback:
             fallback[key] = None

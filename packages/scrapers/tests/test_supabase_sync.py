@@ -59,13 +59,13 @@ def test_send_with_retry_does_not_retry_4xx(monkeypatch) -> None:
     assert calls["n"] == 1  # 400 is a real error, fail fast
 
 
-def test_remote_bill_ids_falls_back_to_unique_jurisdiction_match(monkeypatch) -> None:
+def test_remote_bill_ids_looks_up_by_jurisdiction_only(monkeypatch) -> None:
+    # Must query by the indexed `jurisdiction` column, never the unindexed
+    # `session_id` (which seq-scanned and timed out as the table grew).
     calls: list[str] = []
 
     def fake_remote_rows_by_in(client, table, *, select, column, values, chunk=100):
         calls.append(column)
-        if column == "session_id":
-            return []
         return [
             {
                 "id": "remote-bill-id",
@@ -91,7 +91,38 @@ def test_remote_bill_ids_falls_back_to_unique_jurisdiction_match(monkeypatch) ->
     assert supabase_sync._remote_bill_ids(object(), rows) == {
         "local-bill-id": "remote-bill-id"
     }
-    assert calls == ["session_id", "jurisdiction"]
+    assert calls == ["jurisdiction"]  # single, indexed lookup
+
+
+def test_remote_bill_ids_falls_back_on_session_rekey(monkeypatch) -> None:
+    # Remote session_id differs from local — exact key misses, so fall back to
+    # the unambiguous (jurisdiction, chamber, number) match.
+    def fake_remote_rows_by_in(client, table, *, select, column, values, chunk=100):
+        return [
+            {
+                "id": "remote-bill-id",
+                "jurisdiction": "us-ok",
+                "session_id": "remote-session-NEW",
+                "chamber": "joint",
+                "number": "HCR 1001",
+            }
+        ]
+
+    monkeypatch.setattr(supabase_sync, "_remote_rows_by_in", fake_remote_rows_by_in)
+
+    rows = [
+        {
+            "id": "local-bill-id",
+            "jurisdiction": "us-ok",
+            "session_id": "local-session-OLD",
+            "chamber": "joint",
+            "number": "HCR 1001",
+        }
+    ]
+
+    assert supabase_sync._remote_bill_ids(object(), rows) == {
+        "local-bill-id": "remote-bill-id"
+    }
 
 
 def test_remote_bill_ids_does_not_fall_back_to_ambiguous_bill_number(monkeypatch) -> None:
