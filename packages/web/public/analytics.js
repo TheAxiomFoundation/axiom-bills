@@ -1,10 +1,10 @@
-// Product analytics → Axiom CRM (GA4 property G-5PB7KEWV38).
+// Product analytics → Axiom CRM (GA4 property G-2YHG89FY0N).
 // Every event carries `tool_name` so the CRM tool leaderboard can attribute
 // page views, scroll depth, dwell time, and outbound clicks to this surface.
 (function () {
   "use strict";
 
-  var GA_ID = "G-5PB7KEWV38";
+  var GA_ID = "G-2YHG89FY0N";
   var TOOL_NAME = "axiom-bills";
 
   window.dataLayer = window.dataLayer || [];
