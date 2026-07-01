@@ -64,6 +64,8 @@ export function JurisdictionPage() {
   const { code = "" } = useParams();
   const navigate = useNavigate();
   const [bills, setBills] = useState<BillRow[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [counts, setCounts] = useState<KindCounts | undefined>();
   const [statusFilter, setStatusFilter] = useState<NormalizedStatus | "">("");
   const [kinds, setKinds] = useState<BillKind[]>(["substantive"]);
@@ -76,15 +78,33 @@ export function JurisdictionPage() {
 
   useEffect(() => {
     setBills(null);
+    setHasMore(false);
     setErr(null);
     retry(() => api.bills(code, {
       status: statusFilter || undefined,
       kind: kinds,
       relevance,
     }))
-      .then((r) => setBills(r.bills))
+      .then((r) => { setBills(r.bills); setHasMore(r.has_more); })
       .catch((e) => setErr(errorMessage(e)));
   }, [code, statusFilter, kinds, relevance]);
+
+  const loadMore = () => {
+    if (!bills || loadingMore) return;
+    setLoadingMore(true);
+    retry(() => api.bills(code, {
+      status: statusFilter || undefined,
+      kind: kinds,
+      relevance,
+      offset: bills.length,
+    }))
+      .then((r) => {
+        setBills([...bills, ...r.bills]);
+        setHasMore(r.has_more);
+      })
+      .catch((e) => setErr(errorMessage(e)))
+      .finally(() => setLoadingMore(false));
+  };
 
   return (
     <div>
@@ -208,6 +228,14 @@ export function JurisdictionPage() {
               ))}
             </tbody>
           </table>
+          {hasMore && (
+            <p className="load-more">
+              <button className="link-button" onClick={loadMore}
+                      disabled={loadingMore}>
+                {loadingMore ? "Loading…" : "Load older bills"}
+              </button>
+            </p>
+          )}
           </div>
         )
       )}

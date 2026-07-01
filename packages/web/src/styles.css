@@ -1572,6 +1572,9 @@ table.bills td a:hover { color: var(--color-accent); }
   font: inherit; color: var(--color-accent, #92400e);
   text-decoration: underline;
 }
+.link-button:disabled { opacity: 0.5; cursor: default; }
+
+.load-more { text-align: center; padding: 14px 0 4px; }
 
 .rs-variant-yaml {
   background: #fff; border: 1px solid #d8d4c8; border-top: none;

@@ -323,10 +323,18 @@ async function fetchMatchedSummary(ids: string[]): Promise<Map<string, MatchedSu
   return out;
 }
 
+export const BILLS_PAGE_SIZE = 500;
+
 async function bills(
   code: string,
-  opts: { status?: NormalizedStatus; kind?: BillKind[]; relevance?: Relevance } = {},
-): Promise<{ bills: BillRow[]; applied_kinds: BillKind[]; applied_relevance: Relevance }> {
+  opts: {
+    status?: NormalizedStatus; kind?: BillKind[]; relevance?: Relevance;
+    offset?: number;
+  } = {},
+): Promise<{
+  bills: BillRow[]; applied_kinds: BillKind[]; applied_relevance: Relevance;
+  has_more: boolean;
+}> {
   // The list query stays deliberately lean: it must NOT select the heavy
   // `diffs` JSONB or embed every action. Pulling diffs for up to 500 rows
   // blew past Supabase's statement timeout on large jurisdictions (federal)
@@ -350,8 +358,12 @@ async function bills(
   if (opts.relevance === "touches_corpus") q = q.eq("touches_corpus", true);
   if (opts.relevance === "touches_rulespec") q = q.eq("touches_rulespec", true);
   q = q.order("current_status_at", { ascending: false, nullsFirst: false });
+  // Stable secondary key so pagination windows don't overlap when many
+  // bills share the same current_status_at.
+  q = q.order("id", { ascending: true });
 
-  const { data: rows, error } = await q.limit(500);
+  const offset = opts.offset ?? 0;
+  const { data: rows, error } = await q.range(offset, offset + BILLS_PAGE_SIZE - 1);
   if (error) throw error;
 
   const matched = await fetchMatchedSummary((rows ?? []).map((r: any) => r.id));
@@ -376,7 +388,12 @@ async function bills(
       matched_corpus: m.matched_corpus,
     });
   }
-  return { bills: billsOut, applied_kinds: kinds, applied_relevance: relevance };
+  return {
+    bills: billsOut,
+    applied_kinds: kinds,
+    applied_relevance: relevance,
+    has_more: (rows ?? []).length === BILLS_PAGE_SIZE,
+  };
 }
 
 async function bill(id: string): Promise<BillDetail> {

@@ -344,6 +344,17 @@ def _upsert_variant(conn: sqlite3.Connection, bill_id: str, encoding_id: str,
              baseline_yaml, patched_yaml, diff_summary, note, effective_from,
              source_ops_fingerprint, source_text_sha256, proposed_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(bill_id, file_path) DO UPDATE SET
+            encoding_id=excluded.encoding_id, tier=excluded.tier,
+            patched_rule_names=excluded.patched_rule_names,
+            baseline_yaml=excluded.baseline_yaml,
+            patched_yaml=excluded.patched_yaml,
+            diff_summary=excluded.diff_summary, note=excluded.note,
+            effective_from=excluded.effective_from,
+            source_ops_fingerprint=excluded.source_ops_fingerprint,
+            source_text_sha256=excluded.source_text_sha256,
+            proposed_by=excluded.proposed_by, proposed_model=NULL,
+            computed_at=datetime('now')
         """,
         (uuid.uuid4().hex, bill_id, encoding_id, file_path,
          tier.value, json.dumps(patched_rule_names),
