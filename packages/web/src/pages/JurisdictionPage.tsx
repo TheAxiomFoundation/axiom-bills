@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
+  ALL_KINDS,
   api,
   type BillKind,
   type BillRow,
@@ -16,10 +17,55 @@ import { fmtDate, KIND_LABEL } from "../lib/format";
 import { errorMessage } from "../lib/errors";
 import { retry } from "../lib/retry";
 
+function EmptyState({ code, counts, filtered, relevance, onClear }: {
+  code: string;
+  counts: KindCounts | undefined;
+  filtered: boolean;
+  relevance: Relevance;
+  onClear: () => void;
+}) {
+  const total = counts
+    ? Object.values(counts).reduce((a, b) => a + b, 0)
+    : null;
+
+  // The jurisdiction genuinely has no bills yet (e.g. its scraper needs
+  // an API key that isn't configured).
+  if (total === 0) {
+    return (
+      <p className="hint">
+        No bills have been ingested for <code>{code}</code> yet — the
+        scraper for this jurisdiction hasn't run (some sources need an
+        API key). To pull bills locally:
+        <br /><code>axiom-bills scrape --jurisdiction {code} --limit 50</code>
+      </p>
+    );
+  }
+
+  // Bills exist; the current filters just exclude all of them.
+  return (
+    <p className="hint">
+      No bills match the current filters
+      {relevance !== "any" && code !== "us" && (
+        <> — note that Corpus/RuleSpec matching currently covers federal
+        bills only, so “{relevance === "touches_corpus" ? "Touches corpus" : "Touches RuleSpec"}”
+        is always empty for states</>
+      )}
+      .{" "}
+      {filtered && (
+        <button className="link-button" onClick={onClear}>
+          Reset filters
+        </button>
+      )}
+    </p>
+  );
+}
+
 export function JurisdictionPage() {
   const { code = "" } = useParams();
   const navigate = useNavigate();
   const [bills, setBills] = useState<BillRow[] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [counts, setCounts] = useState<KindCounts | undefined>();
   const [statusFilter, setStatusFilter] = useState<NormalizedStatus | "">("");
   const [kinds, setKinds] = useState<BillKind[]>(["substantive"]);
@@ -32,15 +78,33 @@ export function JurisdictionPage() {
 
   useEffect(() => {
     setBills(null);
+    setHasMore(false);
     setErr(null);
     retry(() => api.bills(code, {
       status: statusFilter || undefined,
       kind: kinds,
       relevance,
     }))
-      .then((r) => setBills(r.bills))
+      .then((r) => { setBills(r.bills); setHasMore(r.has_more); })
       .catch((e) => setErr(errorMessage(e)));
   }, [code, statusFilter, kinds, relevance]);
+
+  const loadMore = () => {
+    if (!bills || loadingMore) return;
+    setLoadingMore(true);
+    retry(() => api.bills(code, {
+      status: statusFilter || undefined,
+      kind: kinds,
+      relevance,
+      offset: bills.length,
+    }))
+      .then((r) => {
+        setBills([...bills, ...r.bills]);
+        setHasMore(r.has_more);
+      })
+      .catch((e) => setErr(errorMessage(e)))
+      .finally(() => setLoadingMore(false));
+  };
 
   return (
     <div>
@@ -57,8 +121,17 @@ export function JurisdictionPage() {
       {err && <p className="error">{err}</p>}
       {!bills ? <p>Loading…</p> : (
         bills.length === 0 ? (
-          <p className="hint">No bills match. If counts are zero everywhere, run the scraper first:
-            <br/><code>axiom-bills scrape --jurisdiction {code} --limit 50</code></p>
+          <EmptyState
+            code={code}
+            counts={counts}
+            filtered={kinds.length < 7 || !!statusFilter || relevance !== "any"}
+            relevance={relevance}
+            onClear={() => {
+              setKinds([...ALL_KINDS]);
+              setStatusFilter("");
+              setRelevance("any");
+            }}
+          />
         ) : (
           <div className="table-scroll">
           <table className="bills">
@@ -155,6 +228,14 @@ export function JurisdictionPage() {
               ))}
             </tbody>
           </table>
+          {hasMore && (
+            <p className="load-more">
+              <button className="link-button" onClick={loadMore}
+                      disabled={loadingMore}>
+                {loadingMore ? "Loading…" : "Load older bills"}
+              </button>
+            </p>
+          )}
           </div>
         )
       )}

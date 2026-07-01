@@ -20,6 +20,7 @@ from selectolax.parser import HTMLParser
 
 from .db import connect, DEFAULT_DB
 from .http import RateLimitedClient
+from .version_rank import stage_rank
 
 
 def _to_text(format_: str, body: bytes) -> str | None:
@@ -67,7 +68,6 @@ def fetch_for_jurisdiction(
                     SELECT label, source_url, format
                       FROM bill_versions
                      WHERE bill_id = ?
-                     ORDER BY label
                     """,
                     (bill_id,),
                 ).fetchall()
@@ -75,18 +75,23 @@ def fetch_for_jurisdiction(
                     continue
                 counts["versions_seen"] += len(versions)
 
-                # Pick the most-preferred format from what's available.
-                chosen = None
-                for fmt in prefer_format:
-                    for v in versions:
-                        if v["format"].lower() == fmt:
-                            chosen = v
-                            break
-                    if chosen:
-                        break
-                if chosen is None:
+                # Pick the LATEST legislative stage that has a fetchable
+                # format. Iterating "ORDER BY label" picked a version
+                # alphabetically — which text the whole diff/variant
+                # pipeline ran on was label-spelling luck.
+                fmt_pref = {fmt: i for i, fmt in enumerate(prefer_format)}
+                fetchable = [
+                    v for v in versions
+                    if v["format"].lower() in fmt_pref
+                ]
+                if not fetchable:
                     counts["skipped"] += 1
                     continue
+                chosen = min(
+                    fetchable,
+                    key=lambda v: (-stage_rank(v["label"]),
+                                   fmt_pref[v["format"].lower()]),
+                )
 
                 try:
                     response = http.get(chosen["source_url"])

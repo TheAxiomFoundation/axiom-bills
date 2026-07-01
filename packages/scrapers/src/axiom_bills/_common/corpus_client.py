@@ -8,7 +8,8 @@ Anon access is granted via the `corpus` schema profile. We expose:
 
 Caching matters: every bill detail view hits this for every cited
 section, and the data only changes when axiom-corpus does a new release.
-A `--force` knob (and a CLI command to clear) is wired through.
+`fetch(..., force=True)` (Python-level only) busts the cache when
+corpus ships a new version.
 """
 from __future__ import annotations
 
@@ -16,11 +17,22 @@ import json
 import os
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
 
 import httpx
 
 from .db import connect, DEFAULT_DB
+
+
+class CorpusUnavailable(RuntimeError):
+    """The corpus service errored (network/5xx/auth) — NOT a miss.
+
+    Callers must not treat this as "not in corpus": recomputing diffs
+    with every section marked not-in-corpus and syncing that up would
+    erase good data. Failing the run loudly preserves the previous
+    state instead.
+    """
 
 
 SUPABASE_URL = os.environ.get(
@@ -126,8 +138,18 @@ def _cached(citation_path: str, db_path: str = DEFAULT_DB) -> CorpusProvision | 
     return _row_to_provision(row)
 
 
+_RETRY_STATUS = {408, 429, 500, 502, 503, 504}
+
+
 def _fetch_supabase(citation_path: str) -> CorpusProvision | None:
-    """Hit the `current_provisions` view in the corpus schema."""
+    """Hit the `current_provisions` view in the corpus schema.
+
+    Returns None only for a genuine miss (empty result). Transient
+    failures are retried with backoff; a request that still fails —
+    or any non-retriable error status — raises CorpusUnavailable so
+    the caller aborts instead of misreading an outage as "not in
+    corpus".
+    """
     url = f"{SUPABASE_URL}/rest/v1/current_provisions"
     params = {
         "citation_path": f"eq.{citation_path}",
@@ -138,12 +160,27 @@ def _fetch_supabase(citation_path: str) -> CorpusProvision | None:
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Accept-Profile": "corpus",
     }
-    try:
-        response = httpx.get(url, params=params, headers=headers, timeout=10.0)
-    except httpx.RequestError:
-        return None
-    if response.status_code != 200:
-        return None
+    attempts = 3
+    response = None
+    for attempt in range(attempts):
+        try:
+            response = httpx.get(url, params=params, headers=headers, timeout=10.0)
+        except httpx.RequestError as exc:
+            if attempt == attempts - 1:
+                raise CorpusUnavailable(
+                    f"corpus request failed for {citation_path}: {exc}"
+                ) from exc
+            time.sleep(1.5 * (2 ** attempt))
+            continue
+        if response.status_code in _RETRY_STATUS and attempt < attempts - 1:
+            time.sleep(1.5 * (2 ** attempt))
+            continue
+        break
+    if response is None or response.status_code != 200:
+        raise CorpusUnavailable(
+            f"corpus returned {response.status_code if response else '?'} "
+            f"for {citation_path}: {(response.text[:200] if response else '')}"
+        )
     rows = response.json()
     if not rows:
         return None
@@ -178,13 +215,21 @@ def _parent_paths(path: str) -> list[str]:
     return out
 
 
+# In-process negative cache: citation_paths corpus has told us it
+# doesn't have this run. Misses aren't stored in SQLite (a corpus
+# release could add them), but within one run every bill citing the
+# same absent section re-asked — hundreds of pointless requests.
+_MISS_CACHE: set[str] = set()
+
+
 def fetch(citation: str, *, force: bool = False,
           db_path: str = DEFAULT_DB) -> CorpusProvision | None:
     """Fetch a corpus provision for a normalized citation; cache on hit.
 
     Falls back to ancestor citation_paths when the exact one isn't in
     corpus — corpus often stores body text at section granularity even
-    when our bill cites a subsection.
+    when our bill cites a subsection. Raises CorpusUnavailable when the
+    service is erroring (never conflated with a miss).
     """
     path = citation_to_path(citation)
     if path is None:
@@ -194,12 +239,15 @@ def fetch(citation: str, *, force: bool = False,
     for try_path in candidates:
         is_exact = try_path == path
         if not force:
+            if try_path in _MISS_CACHE:
+                continue
             cached = _cached(try_path, db_path=db_path)
             if cached is not None:
                 cached.is_exact_match = is_exact
                 return cached
         fresh = _fetch_supabase(try_path)
         if fresh is None:
+            _MISS_CACHE.add(try_path)
             continue
         fresh.citation = citation
         fresh.is_exact_match = is_exact

@@ -40,6 +40,10 @@ TITLE_PATTERNS = compile_kind_patterns([
     (r"^congratulating ", BillKind.CEREMONIAL),
     (r"^celebrating ", BillKind.CEREMONIAL),
     (r"^mourning ", BillKind.CEREMONIAL),
+    # "Support for the designation of the week of June 29 ... as
+    # 'National Tire Safety Week' ... supporting the goals and ideals"
+    (r"^support(ing)?\s+(for\s+)?the designation of", BillKind.CEREMONIAL),
+    (r"supporting the goals and ideals of", BillKind.CEREMONIAL),
 
     # Procedural / chamber-rules resolutions.
     (r"^providing for consideration of ", BillKind.PROCEDURAL),

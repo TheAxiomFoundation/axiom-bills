@@ -199,39 +199,33 @@ const AXIOM_APP_URL =
 
 // ─── Internal helpers ───────────────────────────────────────────────
 
-function buildMatchedForBill(
-  diffs: BillDiffs | null,
-  _citationRows: { citation: string }[],
-  _encodingRows: {
-    repo: string; kind: "statute" | "regulation" | "policy";
-    citation: string; file_path: string;
-  }[],
-) {
-  // matched_encodings: strict definition — only count an encoding as
-  // "touched" if the bill has an APPLIED amendment op against a section
-  // whose citation matches an encoding. A bill that merely cites §X in a
-  // findings/definitions clause doesn't force a re-encode, so it
-  // shouldn't claim "touches rulespec".
+function buildMatchedForBill(diffs: BillDiffs | null) {
+  // matched_encodings: an encoding counts as "touched" when the bill
+  // has a PARSED amendment op (applied or unapplied) against a section
+  // whose citation matches. A bill that merely cites §X in a findings/
+  // definitions clause doesn't force a re-encode; but an instruction
+  // the applier couldn't verify against corpus text is still a real
+  // amendment and must not vanish from the trigger.
   const matched_encodings: MatchedEncoding[] = [];
   const seenE = new Set<string>();
   if (diffs) {
     for (const sec of diffs.sections) {
       if (!sec.encoding) continue;
-      if (sec.applied_ops.length === 0) continue;
+      if (sec.applied_ops.length === 0 && sec.unapplied_ops.length === 0) continue;
       if (seenE.has(sec.encoding.file_path)) continue;
       seenE.add(sec.encoding.file_path);
       matched_encodings.push(sec.encoding);
     }
   }
 
-  // matched_corpus: corpus rows the bill ACTUALLY amends. Sections with
-  // zero applied ops (drift / unparsed / cross-reference) don't count.
+  // matched_corpus: corpus rows the bill amends (parsed ops, applied or
+  // not). Pure cross-references still don't count.
   const matched_corpus: MatchedCorpus[] = [];
   const seenC = new Set<string>();
   if (diffs) {
     for (const sec of diffs.sections) {
       if (!sec.in_corpus || !sec.citation_path) continue;
-      if (sec.applied_ops.length === 0) continue;
+      if (sec.applied_ops.length === 0 && sec.unapplied_ops.length === 0) continue;
       if (seenC.has(sec.citation_path)) continue;
       seenC.add(sec.citation_path);
       matched_corpus.push({
@@ -282,12 +276,16 @@ async function coverage(): Promise<CoverageSummary> {
 }
 
 async function kindCounts(code: string): Promise<KindCounts> {
-  const base = supabase.from("bills").select("id", { count: "exact", head: true })
-    .eq("jurisdiction", code);
-  const kinds: BillKind[] = ALL_KINDS;
   const out = {} as KindCounts;
-  await Promise.all(kinds.map(async (k) => {
-    const { count } = await base.eq("kind", k);
+  // Build a fresh query per kind: supabase-js builders are mutable, so
+  // sharing one and calling .eq("kind", k) seven times stacks seven
+  // mutually-exclusive filters onto the same request (= zero counts).
+  await Promise.all(ALL_KINDS.map(async (k) => {
+    const { count } = await supabase
+      .from("bills")
+      .select("id", { count: "exact", head: true })
+      .eq("jurisdiction", code)
+      .eq("kind", k);
     out[k] = count ?? 0;
   }));
   return out;
@@ -325,10 +323,18 @@ async function fetchMatchedSummary(ids: string[]): Promise<Map<string, MatchedSu
   return out;
 }
 
+export const BILLS_PAGE_SIZE = 500;
+
 async function bills(
   code: string,
-  opts: { status?: NormalizedStatus; kind?: BillKind[]; relevance?: Relevance } = {},
-): Promise<{ bills: BillRow[]; applied_kinds: BillKind[]; applied_relevance: Relevance }> {
+  opts: {
+    status?: NormalizedStatus; kind?: BillKind[]; relevance?: Relevance;
+    offset?: number;
+  } = {},
+): Promise<{
+  bills: BillRow[]; applied_kinds: BillKind[]; applied_relevance: Relevance;
+  has_more: boolean;
+}> {
   // The list query stays deliberately lean: it must NOT select the heavy
   // `diffs` JSONB or embed every action. Pulling diffs for up to 500 rows
   // blew past Supabase's statement timeout on large jurisdictions (federal)
@@ -346,9 +352,18 @@ async function bills(
   if (opts.status) q = q.eq("current_status", opts.status);
   const kinds = opts.kind && opts.kind.length ? opts.kind : ALL_KINDS;
   q = q.in("kind", kinds);
+  // Relevance filters server-side on the materialized flags. Filtering
+  // client-side over the 500-row window silently returned nothing when
+  // the matching bills' last actions fell outside the newest 500.
+  if (opts.relevance === "touches_corpus") q = q.eq("touches_corpus", true);
+  if (opts.relevance === "touches_rulespec") q = q.eq("touches_rulespec", true);
   q = q.order("current_status_at", { ascending: false, nullsFirst: false });
+  // Stable secondary key so pagination windows don't overlap when many
+  // bills share the same current_status_at.
+  q = q.order("id", { ascending: true });
 
-  const { data: rows, error } = await q.limit(500);
+  const offset = opts.offset ?? 0;
+  const { data: rows, error } = await q.range(offset, offset + BILLS_PAGE_SIZE - 1);
   if (error) throw error;
 
   const matched = await fetchMatchedSummary((rows ?? []).map((r: any) => r.id));
@@ -356,9 +371,10 @@ async function bills(
   const relevance: Relevance = opts.relevance ?? "any";
   const billsOut: BillRow[] = [];
   for (const r of rows ?? []) {
+    // Relevance is already filtered server-side on the materialized
+    // flags; don't re-filter on the best-effort matched summary here —
+    // if that fetch fails, every row would vanish.
     const m = matched.get(r.id) ?? { matched_encodings: [], matched_corpus: [] };
-    if (relevance === "touches_corpus" && m.matched_corpus.length === 0) continue;
-    if (relevance === "touches_rulespec" && m.matched_encodings.length === 0) continue;
     billsOut.push({
       id: r.id, number: r.number, title: r.title, chamber: r.chamber,
       kind: r.kind as BillKind,
@@ -372,7 +388,12 @@ async function bills(
       matched_corpus: m.matched_corpus,
     });
   }
-  return { bills: billsOut, applied_kinds: kinds, applied_relevance: relevance };
+  return {
+    bills: billsOut,
+    applied_kinds: kinds,
+    applied_relevance: relevance,
+    has_more: (rows ?? []).length === BILLS_PAGE_SIZE,
+  };
 }
 
 async function bill(id: string): Promise<BillDetail> {
@@ -391,10 +412,6 @@ async function bill(id: string): Promise<BillDetail> {
     .maybeSingle();
   if (error) throw error;
   if (!r) throw new Error("bill not found");
-
-  const { data: encodings } = await supabase
-    .from("axiom_encodings")
-    .select("repo, kind, citation, file_path");
 
   const actions: BillAction[] = (r.bill_actions ?? [])
     .sort((a: any, b: any) => a.occurred_at < b.occurred_at ? -1 : 1)
@@ -421,8 +438,6 @@ async function bill(id: string): Promise<BillDetail> {
 
   const { matched_encodings, matched_corpus } = buildMatchedForBill(
     r.diffs as BillDiffs | null,
-    (r.bill_citations ?? []) as { citation: string }[],
-    (encodings ?? []) as any,
   );
 
   return {

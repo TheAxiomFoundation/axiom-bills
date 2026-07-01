@@ -37,6 +37,8 @@ from typing import Iterable
 
 import yaml
 
+from .citation_scope import is_ancestor
+
 
 # ────────────────────────────────────────────────────────────────────
 #  Data types
@@ -58,11 +60,17 @@ class Atom:
     that's the formula's numeric value rendered as text (e.g. "10000");
     for a `date` atom it's an ISO date string. We use `text` to detect
     matches against bill needles/payloads.
+
+    `rule_source` is the owning rule's `source` citation (subsection
+    level, e.g. '26 USC 32(b)(2)'). When present, it scopes matching:
+    an op striking "$10,000" in 32(b) must not patch a rule grounded in
+    32(a) that happens to use the same number.
     """
     rule_name: str
     path: str
     kind: str
     text: str
+    rule_source: str = ""
 
 
 @dataclass
@@ -102,6 +110,32 @@ _TIER_BY_OP_KIND: dict[str, Tier] = {
 
 def _classify_op(op: Op) -> Tier:
     return _TIER_BY_OP_KIND.get(op.kind, Tier.STRUCTURAL)
+
+
+def _section_root(citation: str) -> str:
+    """'26 USC 32(b)(2)' → '26 USC 32'."""
+    i = citation.find("(")
+    return (citation[:i] if i != -1 else citation).strip()
+
+
+def _op_reaches_rule(op_target: str, rule_source: str) -> bool:
+    """Scope check: can an op targeting `op_target` change a rule
+    grounded in `rule_source`?
+
+    Only enforced when both citations are within the same section and
+    comparable — a rule sourced at 32(a) is out of reach of an op
+    striking text in 32(b). Sources in another format (or empty) stay
+    permissive: value-matching alone decides, as before.
+    """
+    if not op_target or not rule_source:
+        return True
+    if _section_root(op_target) != _section_root(rule_source):
+        return True
+    return (
+        op_target == rule_source
+        or is_ancestor(op_target, rule_source)
+        or is_ancestor(rule_source, op_target)
+    )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -222,11 +256,25 @@ def reencode_rule_file(
                 note=f"Op {op.kind} needle/payload not a recognized scalar "
                      f"(needle={op.needle!r}, payload={op.payload!r}).",
             )
-        kind, n_norm = needle_scalar
-        _, p_norm = payload_scalar
+        n_kind, n_norm = needle_scalar
+        p_kind, p_norm = payload_scalar
+        if n_kind != p_kind:
+            # Striking "$500" and inserting "January 1, 2027" would put
+            # a date into a Money formula. Not auto-patchable.
+            return ReencodeResult(
+                tier=Tier.STRUCTURAL,
+                patched_yaml=yaml_text,
+                patched_rules=[],
+                note=f"Op {op.kind} replaces a {n_kind} with a {p_kind} "
+                     f"(needle={op.needle!r}, payload={op.payload!r}) — "
+                     "needs human review.",
+            )
 
+        op_patched = False
         for atom in atoms:
             if atom.text.strip() != n_norm:
+                continue
+            if not _op_reaches_rule(op.target, atom.rule_source):
                 continue
             rule = rules_by_name.get(atom.rule_name)
             if rule is None:
@@ -234,13 +282,17 @@ def reencode_rule_file(
             _append_patched_version(rule, atom.path, p_norm,
                                     effective_from=effective_from)
             rules_were_patched.add(atom.rule_name)
+            op_patched = True
 
-        # Patch the module summary in-place so the prose reflects new
-        # law. Strict needle/payload string substitution.
-        summary = data.get("module", {}).get("summary")
-        if isinstance(summary, str) and op.needle in summary:
-            data["module"]["summary"] = summary.replace(op.needle, op.payload)
-        diff_lines.append(f"{op.needle} → {op.payload}")
+        if op_patched:
+            # Patch the module summary in-place so the prose reflects
+            # new law. Strict needle/payload string substitution. Only
+            # for ops that actually patched a rule — recording unmatched
+            # ops made diff_summary claim changes that weren't applied.
+            summary = data.get("module", {}).get("summary")
+            if isinstance(summary, str) and op.needle in summary:
+                data["module"]["summary"] = summary.replace(op.needle, op.payload)
+            diff_lines.append(f"{op.needle} → {op.payload}")
 
     if not rules_were_patched:
         # Ops parse cleanly as scalars, but no rule's atom matched the

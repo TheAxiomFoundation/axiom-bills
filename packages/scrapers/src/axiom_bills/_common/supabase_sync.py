@@ -313,13 +313,29 @@ def sync(db_path: str) -> dict[str, int]:
             client, "sessions", rows, on_conflict="jurisdiction,name"
         )
 
-        # 3. Bills — includes the diffs JSONB.
+        # 3. Bills — includes the diffs JSONB, but only when this run
+        #    actually computed some. A run that skipped precompute-diffs
+        #    (state matrix jobs, FETCH_TEXTS=false) has NULL everywhere
+        #    locally, and shipping those NULLs would erase the diffs a
+        #    previous run wrote to Supabase.
+        include_diffs = (
+            _has_column(local, "bills", "diffs")
+            and local.execute(
+                "SELECT 1 FROM bills WHERE diffs IS NOT NULL LIMIT 1"
+            ).fetchone() is not None
+        )
+        # The touch flags travel with diffs — they're derived from it, so
+        # a run that didn't recompute diffs has nothing true to say.
+        include_flags = include_diffs and _has_column(
+            local, "bills", "touches_rulespec")
         bills_rows: list[dict] = []
-        diffs_expr = "diffs" if _has_column(local, "bills", "diffs") else "NULL AS diffs"
+        diffs_expr = "diffs" if include_diffs else "NULL AS diffs"
+        flags_expr = (", touches_corpus, touches_rulespec"
+                      if include_flags else "")
         for r in local.execute(f"""
             SELECT id, jurisdiction, session_id, chamber, number, title, summary,
                    subjects, sponsors, source_url, current_status, current_status_at,
-                   kind, first_seen_at, last_scraped_at, {diffs_expr}
+                   kind, first_seen_at, last_scraped_at, {diffs_expr}{flags_expr}
               FROM bills
         """):
             bills_rows.append({
@@ -338,7 +354,12 @@ def sync(db_path: str) -> dict[str, int]:
                 "kind": r["kind"],
                 "first_seen_at": r["first_seen_at"],
                 "last_scraped_at": r["last_scraped_at"],
-                "diffs": json.loads(r["diffs"]) if r["diffs"] else None,
+                **({"diffs": json.loads(r["diffs"]) if r["diffs"] else None}
+                   if include_diffs else {}),
+                **({
+                    "touches_corpus": _bool(r["touches_corpus"]),
+                    "touches_rulespec": _bool(r["touches_rulespec"]),
+                } if include_flags else {}),
             })
         bill_id_map = _remote_bill_ids(client, bills_rows)
         for row in bills_rows:
@@ -450,67 +471,277 @@ def sync(db_path: str) -> dict[str, int]:
             client, "bill_citations", rows, on_conflict="bill_id,citation,source"
         )
 
-        # 8. Encodings + rules + atoms
-        rows = []
-        for r in local.execute("""
+        # 8. Encodings + rules + atoms + rule_variants.
+        #
+        # Skipped entirely when the local axiom_encodings table is empty:
+        # a run that never indexed a rulespec checkout (state matrix jobs)
+        # has nothing true to say about these tables, and pushing an
+        # empty picture would corrupt what a federal run wrote.
+        enc_rows = _rows(local, """
             SELECT id, jurisdiction, repo, kind, citation, file_path, indexed_at
               FROM axiom_encodings
-        """):
-            rows.append(dict(r))
-        counts["axiom_encodings"] = _upsert(client, "axiom_encodings", rows, on_conflict="id")
-
-        rows = []
-        for r in local.execute("""
-            SELECT id, encoding_id, rule_name, rule_kind, rule_source, rule_dtype,
-                   module_corpus_citation_path, indexed_at
-              FROM encoded_rules
-        """):
-            rows.append(dict(r))
-        counts["encoded_rules"] = _upsert(client, "encoded_rules", rows, on_conflict="id")
-
-        rows = []
-        for r in local.execute("""
-            SELECT id, rule_id, atom_path, atom_kind, corpus_citation_path, text
-              FROM encoded_rule_atoms
-        """):
-            rows.append(dict(r))
-        counts["encoded_rule_atoms"] = _upsert(client, "encoded_rule_atoms", rows, on_conflict="id")
-
-        # rule_variants — Pipeline B's per-bill patched YAML payloads.
-        # Skipped silently if the local table doesn't exist yet (older
-        # SQLite snapshots before migration 007).
-        try:
-            rows = []
-            for r in local.execute("""
-                SELECT id, bill_id, encoding_id, file_path, tier,
-                       patched_rule_names, baseline_yaml, patched_yaml,
-                       diff_summary, note, effective_from, computed_at,
-                       proposed_by, proposed_model
-                  FROM rule_variants
-            """):
-                rows.append({
-                    "id": r["id"],
-                    "bill_id": bill_id_map.get(r["bill_id"], r["bill_id"]),
-                    "encoding_id": r["encoding_id"],
-                    "file_path": r["file_path"],
-                    "tier": r["tier"],
-                    "patched_rule_names": json.loads(r["patched_rule_names"] or "[]"),
-                    "baseline_yaml": r["baseline_yaml"],
-                    "patched_yaml": r["patched_yaml"],
-                    "diff_summary": r["diff_summary"],
-                    "note": r["note"],
-                    "effective_from": r["effective_from"],
-                    "computed_at": r["computed_at"],
-                    "proposed_by": r["proposed_by"],
-                    "proposed_model": r["proposed_model"],
-                })
-            counts["rule_variants"] = _upsert(
-                client, "rule_variants", rows, on_conflict="id", chunk=200,
+        """)
+        if not enc_rows:
+            counts["axiom_encodings"] = 0
+        else:
+            # Remote file_path is unique; adopt the remote id where the
+            # same file already exists so an id-churning local re-index
+            # can't 23505 against it — mirroring how bills preserve ids.
+            remote_encs = _remote_rows_by_in(
+                client, "axiom_encodings",
+                select="id,file_path",
+                column="repo",
+                values=(r["repo"] for r in enc_rows),
             )
-        except sqlite3.OperationalError as exc:
-            if "no such table" not in str(exc):
-                raise
-            counts["rule_variants"] = 0
+            remote_by_path = {r["file_path"]: r["id"] for r in remote_encs}
+            enc_id_map = {
+                r["id"]: remote_by_path.get(r["file_path"], r["id"])
+                for r in enc_rows
+            }
+            for r in enc_rows:
+                r["id"] = enc_id_map[r["id"]]
+            counts["axiom_encodings"] = _upsert(
+                client, "axiom_encodings", enc_rows, on_conflict="file_path"
+            )
 
+            # A local index run owns the full slice for its repo(s):
+            # remote encodings whose YAML vanished from the checkout are
+            # stale — delete them (rules/atoms/variants cascade).
+            local_paths = {r["file_path"] for r in enc_rows}
+            stale_ids = sorted(
+                r["id"] for r in remote_encs
+                if r["file_path"] not in local_paths
+            )
+            for batch in _chunks(stale_ids, 100):
+                resp = _send_with_retry(
+                    lambda: client.delete(
+                        "/axiom_encodings",
+                        params={"id": f"in.({','.join(batch)})"},
+                    ),
+                    what="delete stale axiom_encodings",
+                )
+                if resp.status_code >= 300:
+                    raise RuntimeError(
+                        f"Supabase delete from axiom_encodings failed "
+                        f"({resp.status_code}): {resp.text[:500]}"
+                    )
+
+            # encoded_rules/atoms get fresh uuids on every local re-index
+            # and have no natural key remotely — upserting by id would
+            # accumulate duplicates forever. Replace the slice instead:
+            # delete remote rules for the encodings we're syncing (atoms
+            # cascade), then insert.
+            synced_enc_ids = sorted({r["id"] for r in enc_rows})
+            for batch in _chunks(synced_enc_ids, 100):
+                resp = _send_with_retry(
+                    lambda: client.delete(
+                        "/encoded_rules",
+                        params={"encoding_id": f"in.({','.join(batch)})"},
+                    ),
+                    what="delete encoded_rules",
+                )
+                if resp.status_code >= 300:
+                    raise RuntimeError(
+                        f"Supabase delete from encoded_rules failed "
+                        f"({resp.status_code}): {resp.text[:500]}"
+                    )
+
+            rule_rows = _rows(local, """
+                SELECT id, encoding_id, rule_name, rule_kind, rule_source, rule_dtype,
+                       module_corpus_citation_path, indexed_at
+                  FROM encoded_rules
+            """)
+            for r in rule_rows:
+                r["encoding_id"] = enc_id_map.get(r["encoding_id"], r["encoding_id"])
+            counts["encoded_rules"] = _upsert(client, "encoded_rules", rule_rows, on_conflict="id")
+
+            atom_rows = _rows(local, """
+                SELECT id, rule_id, atom_path, atom_kind, corpus_citation_path, text
+                  FROM encoded_rule_atoms
+            """)
+            counts["encoded_rule_atoms"] = _upsert(
+                client, "encoded_rule_atoms", atom_rows, on_conflict="id"
+            )
+
+            # rule_variants — Pipeline B's per-bill patched YAML payloads.
+            # Upsert on the natural key (bill_id, file_path); ids churn
+            # with every local recompute, so adopt the remote id first
+            # like every other child table.
+            try:
+                has_fingerprint = _has_column(
+                    local, "rule_variants", "source_ops_fingerprint")
+                extra_cols = (
+                    ", source_ops_fingerprint, source_text_sha256"
+                    if has_fingerprint else ""
+                )
+                rows = []
+                for r in local.execute(f"""
+                    SELECT id, bill_id, encoding_id, file_path, tier,
+                           patched_rule_names, baseline_yaml, patched_yaml,
+                           diff_summary, note, effective_from, computed_at,
+                           proposed_by, proposed_model{extra_cols}
+                      FROM rule_variants
+                """):
+                    rows.append({
+                        "id": r["id"],
+                        "bill_id": bill_id_map.get(r["bill_id"], r["bill_id"]),
+                        "encoding_id": enc_id_map.get(r["encoding_id"], r["encoding_id"]),
+                        "file_path": r["file_path"],
+                        "tier": r["tier"],
+                        "patched_rule_names": json.loads(r["patched_rule_names"] or "[]"),
+                        "baseline_yaml": r["baseline_yaml"],
+                        "patched_yaml": r["patched_yaml"],
+                        "diff_summary": r["diff_summary"],
+                        "note": r["note"],
+                        "effective_from": r["effective_from"],
+                        "computed_at": r["computed_at"],
+                        "proposed_by": r["proposed_by"],
+                        "proposed_model": r["proposed_model"],
+                        **({
+                            "source_ops_fingerprint": r["source_ops_fingerprint"],
+                            "source_text_sha256": r["source_text_sha256"],
+                        } if has_fingerprint else {}),
+                    })
+                # When this run recomputed diffs, the local variant set is
+                # authoritative for every synced bill — including bills
+                # whose diffs no longer touch any encoding. Fetch remote
+                # variants for all of them so stale rows get deleted, not
+                # just id-remapped.
+                variant_bill_ids = {row["bill_id"] for row in rows}
+                if include_diffs:
+                    variant_bill_ids |= set(bill_id_map.values())
+                remote_variants = _remote_rows_by_in(
+                    client,
+                    "rule_variants",
+                    select="id,bill_id,file_path",
+                    column="bill_id",
+                    values=variant_bill_ids,
+                )
+                remote_by_key = {
+                    (r["bill_id"], r["file_path"]): r["id"]
+                    for r in remote_variants
+                }
+                for row in rows:
+                    row["id"] = remote_by_key.get(
+                        (row["bill_id"], row["file_path"]), row["id"])
+                counts["rule_variants"] = _upsert(
+                    client, "rule_variants", rows,
+                    on_conflict="bill_id,file_path", chunk=200,
+                )
+                if include_diffs:
+                    local_keys = {
+                        (row["bill_id"], row["file_path"]) for row in rows
+                    }
+                    stale_variant_ids = sorted(
+                        r["id"] for r in remote_variants
+                        if (r["bill_id"], r["file_path"]) not in local_keys
+                    )
+                    for batch in _chunks(stale_variant_ids, 100):
+                        resp = _send_with_retry(
+                            lambda: client.delete(
+                                "/rule_variants",
+                                params={"id": f"in.({','.join(batch)})"},
+                            ),
+                            what="delete stale rule_variants",
+                        )
+                        if resp.status_code >= 300:
+                            raise RuntimeError(
+                                f"Supabase delete from rule_variants failed "
+                                f"({resp.status_code}): {resp.text[:500]}"
+                            )
+                    counts["rule_variants_deleted"] = len(stale_variant_ids)
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                counts["rule_variants"] = 0
+
+    local.close()
+    return counts
+
+
+def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
+    """Pull still-valid LLM proposals from Supabase into local SQLite.
+
+    CI runs start from an empty SQLite, so proposals from earlier runs
+    live only in Supabase. Run this after ``precompute-variants`` and
+    before ``propose-llm-variants``: any remote proposal whose
+    source_ops_fingerprint still matches the freshly computed local row
+    is copied down, so the LLM is only called for genuinely new or
+    changed variants — and the following ``sync-supabase`` pushes the
+    hydrated values back instead of overwriting them with NULL.
+    """
+    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
+    local = _local(db_path)
+    try:
+        pending = [dict(r) for r in local.execute("""
+            SELECT v.id, v.bill_id, v.file_path, v.source_ops_fingerprint,
+                   b.jurisdiction, b.session_id, b.chamber, b.number
+              FROM rule_variants v
+              JOIN bills b ON b.id = v.bill_id
+             WHERE v.patched_yaml IS NULL
+               AND v.tier IN ('list', 'structural')
+               AND v.source_ops_fingerprint IS NOT NULL
+        """)]
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            local.close()
+            return counts
+        raise
+    counts["candidates"] = len(pending)
+    if not pending:
+        local.close()
+        return counts
+
+    with _client() as client:
+        session_rows = local.execute(
+            "SELECT id, jurisdiction, name FROM sessions"
+        ).fetchall()
+        session_id_map = _remote_session_ids(client, session_rows)
+        bill_lookup_rows = list({
+            row["bill_id"]: {
+                "id": row["bill_id"],
+                "jurisdiction": row["jurisdiction"],
+                "session_id": session_id_map.get(row["session_id"], row["session_id"]),
+                "chamber": row["chamber"],
+                "number": row["number"],
+            }
+            for row in pending
+        }.values())
+        bill_id_map = _remote_bill_ids(client, bill_lookup_rows)
+
+        remote_rows = _remote_rows_by_in(
+            client,
+            "rule_variants",
+            select=("bill_id,file_path,patched_yaml,proposed_by,"
+                    "proposed_model,source_ops_fingerprint"),
+            column="bill_id",
+            values=(bill_id_map[r["bill_id"]] for r in pending),
+        )
+        remote_by_key = {
+            (r["bill_id"], r["file_path"]): r
+            for r in remote_rows
+            if r["proposed_by"] == "llm" and r["patched_yaml"]
+        }
+
+        for row in pending:
+            remote = remote_by_key.get(
+                (bill_id_map[row["bill_id"]], row["file_path"])
+            )
+            if remote is None:
+                continue
+            if remote["source_ops_fingerprint"] != row["source_ops_fingerprint"]:
+                counts["stale_remote"] += 1
+                continue
+            local.execute(
+                """
+                UPDATE rule_variants
+                   SET patched_yaml = ?, proposed_by = 'llm',
+                       proposed_model = ?, note = NULL
+                 WHERE id = ?
+                """,
+                (remote["patched_yaml"], remote["proposed_model"], row["id"]),
+            )
+            counts["hydrated"] += 1
+        local.commit()
     local.close()
     return counts

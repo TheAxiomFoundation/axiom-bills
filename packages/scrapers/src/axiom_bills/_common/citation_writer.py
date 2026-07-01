@@ -18,7 +18,8 @@ def extract_for_jurisdiction(
     extractor: Callable[[str], list[tuple[str, str]]],
     db_path: str = DEFAULT_DB,
 ) -> dict[str, int]:
-    counts = {"bills": 0, "summary_hits": 0, "text_hits": 0, "rows_written": 0}
+    counts = {"bills": 0, "title_hits": 0, "summary_hits": 0,
+              "text_hits": 0, "rows_written": 0}
     with connect(db_path) as conn:
         bills = conn.execute(
             "SELECT id, title, summary FROM bills WHERE jurisdiction = ?",
@@ -32,11 +33,10 @@ def extract_for_jurisdiction(
 
             for raw, citation in extractor(bill["title"] or ""):
                 extracted.append((raw, citation, "title"))
+                counts["title_hits"] += 1
             for raw, citation in extractor(bill["summary"] or ""):
                 extracted.append((raw, citation, "summary"))
-            counts["summary_hits"] += sum(
-                1 for x in extracted if x[2] in ("title", "summary")
-            )
+                counts["summary_hits"] += 1
 
             texts = conn.execute(
                 "SELECT text FROM bill_texts WHERE bill_id = ?",

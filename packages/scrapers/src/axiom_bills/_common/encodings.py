@@ -174,12 +174,20 @@ def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
         "rules": 0, "atoms": 0,
     }
     with connect(db_path) as conn:
-        # Replace the slice for this repo so renames don't leave stale rows.
-        # encoded_rules and encoded_rule_atoms cascade via ON DELETE CASCADE.
-        conn.execute(
-            "DELETE FROM axiom_encodings WHERE jurisdiction = ? AND repo = ?",
-            (jurisdiction, repo_name),
-        )
+        # Keep encoding ids stable across re-index runs: rule_variants
+        # references them (ON DELETE CASCADE), and the Supabase sync
+        # upserts by id against a unique file_path — churning ids either
+        # wipes computed variants locally or collides remotely. Only
+        # file_paths that vanished from the repo are deleted.
+        existing_ids = {
+            row["file_path"]: row["id"]
+            for row in conn.execute(
+                "SELECT id, file_path FROM axiom_encodings"
+                " WHERE jurisdiction = ? AND repo = ?",
+                (jurisdiction, repo_name),
+            )
+        }
+        seen_paths: set[str] = set()
         for yaml_path in repo_path.rglob("*.yaml"):
             if yaml_path.name.endswith(".test.yaml"):
                 continue
@@ -193,14 +201,25 @@ def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
                 counts["skipped"] += 1
                 continue
             kind, citation = parsed
-            encoding_id = uuid.uuid4().hex
+            encoding_id = existing_ids.get(str(rel)) or uuid.uuid4().hex
+            seen_paths.add(str(rel))
             conn.execute(
                 """
-                INSERT OR REPLACE INTO axiom_encodings
+                INSERT INTO axiom_encodings
                   (id, jurisdiction, repo, kind, citation, file_path)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  kind = excluded.kind,
+                  citation = excluded.citation,
+                  file_path = excluded.file_path
                 """,
                 (encoding_id, jurisdiction, repo_name, kind, citation, str(rel)),
+            )
+            # Rule-level rows are re-derived from the YAML each run;
+            # atoms cascade off the deleted rules.
+            conn.execute(
+                "DELETE FROM encoded_rules WHERE encoding_id = ?",
+                (encoding_id,),
             )
             counts["indexed"] += 1
 
@@ -222,4 +241,14 @@ def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
             r, a = _index_rules(conn, encoding_id, doc, corpus_path)
             counts["rules"] += r
             counts["atoms"] += a
+
+        # Drop encodings whose YAML no longer exists in the repo (renames,
+        # deletions). Their encoded_rules/atoms/rule_variants cascade —
+        # correct here, since the baseline file is genuinely gone.
+        vanished = set(existing_ids) - seen_paths
+        for path in vanished:
+            conn.execute(
+                "DELETE FROM axiom_encodings WHERE id = ?",
+                (existing_ids[path],),
+            )
     return counts

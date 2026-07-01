@@ -668,8 +668,12 @@ def precompute_diffs(jurisdiction: str | None) -> None:
               help="Stop after N successful proposals.")
 @click.option("--dry-run", is_flag=True,
               help="Call the LLM but don't write proposals to the DB.")
+@click.option("--retry-rejected", is_flag=True,
+              help="Also re-attempt variants a previous run's validator "
+                   "rejected (skipped by default to avoid re-spending "
+                   "tokens on the same inputs).")
 def propose_llm_variants(jurisdiction: str | None, limit: int | None,
-                         dry_run: bool) -> None:
+                         dry_run: bool, retry_rejected: bool) -> None:
     """LLM-assisted Tier 3: draft patched YAML for structural variants.
 
     Walks every variant where tier is 'list' or 'structural' and
@@ -678,9 +682,102 @@ def propose_llm_variants(jurisdiction: str | None, limit: int | None,
     proposed re-encoding. Requires ANTHROPIC_API_KEY in env.
     """
     from ._common.variants_llm import propose_all
-    counts = propose_all(jurisdiction=jurisdiction, limit=limit, dry_run=dry_run)
+    counts = propose_all(jurisdiction=jurisdiction, limit=limit,
+                         dry_run=dry_run, retry_rejected=retry_rejected)
     for k, v in sorted(counts.items()):
         click.echo(f"  {k:<12} {v}")
+
+
+@main.command(name="hydrate-variants")
+def hydrate_variants() -> None:
+    """Copy still-valid LLM proposals from Supabase into local SQLite.
+
+    Run after `precompute-variants` and before `propose-llm-variants`
+    when working from a fresh database (CI does this every run): any
+    remote proposal whose source fingerprint still matches the local
+    variant is reused instead of re-calling the LLM, and the following
+    sync won't overwrite it with NULL. Requires SUPABASE_URL and
+    SUPABASE_SERVICE_KEY.
+    """
+    from ._common.supabase_sync import hydrate_llm_proposals
+    from ._common.db import DEFAULT_DB
+    counts = hydrate_llm_proposals(DEFAULT_DB)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<14} {v}")
+
+
+@main.command(name="export-variants")
+@click.option("--out", "-o", required=True,
+              type=click.Path(file_okay=False),
+              help="Directory to write patched YAML files into.")
+@click.option("--jurisdiction", "-j", default=None,
+              help="Limit to one jurisdiction code (e.g. 'us').")
+@click.option("--status", "statuses", multiple=True,
+              help="Only bills in these normalized statuses "
+                   "(e.g. --status enacted --status signed). Default: all.")
+def export_variants(out: str, jurisdiction: str | None,
+                    statuses: tuple[str, ...]) -> None:
+    """Export patched rule YAML for downstream consumption.
+
+    Writes <out>/<repo>/<bill_number>/<file_path> for every variant with
+    a patched_yaml, plus a manifest.json describing each file's
+    provenance (bill, status, tier, proposer, fingerprint). This is the
+    hand-off surface toward rulespec-* PRs and other consumers.
+    """
+    import json as _json
+    from pathlib import Path
+    out_dir = Path(out)
+    where = ["v.patched_yaml IS NOT NULL"]
+    params: list = []
+    if jurisdiction:
+        where.append("b.jurisdiction = ?")
+        params.append(jurisdiction)
+    if statuses:
+        where.append(
+            f"b.current_status IN ({','.join('?' * len(statuses))})")
+        params.extend(statuses)
+    manifest = []
+    with connect(DEFAULT_DB) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT v.file_path, v.tier, v.patched_rule_names, v.patched_yaml,
+                   v.effective_from, v.proposed_by, v.proposed_model,
+                   v.source_ops_fingerprint, v.computed_at,
+                   b.jurisdiction, b.number, b.current_status,
+                   e.repo, e.citation
+              FROM rule_variants v
+              JOIN bills b ON b.id = v.bill_id
+              LEFT JOIN axiom_encodings e ON e.id = v.encoding_id
+             WHERE {' AND '.join(where)}
+             ORDER BY b.jurisdiction, b.number, v.file_path
+            """,
+            params,
+        ).fetchall()
+        for r in rows:
+            repo = r["repo"] or "unknown-repo"
+            bill_slug = r["number"].replace(" ", "").replace("/", "-")
+            dest = out_dir / repo / bill_slug / r["file_path"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(r["patched_yaml"])
+            manifest.append({
+                "path": str(dest.relative_to(out_dir)),
+                "repo": repo,
+                "file_path": r["file_path"],
+                "citation": r["citation"],
+                "jurisdiction": r["jurisdiction"],
+                "bill_number": r["number"],
+                "bill_status": r["current_status"],
+                "tier": r["tier"],
+                "patched_rule_names": _json.loads(r["patched_rule_names"] or "[]"),
+                "effective_from": r["effective_from"],
+                "proposed_by": r["proposed_by"],
+                "proposed_model": r["proposed_model"],
+                "source_ops_fingerprint": r["source_ops_fingerprint"],
+                "computed_at": r["computed_at"],
+            })
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "manifest.json").write_text(_json.dumps(manifest, indent=2))
+    click.echo(f"Exported {len(manifest)} patched files to {out_dir}")
 
 
 @main.command(name="precompute-variants")
@@ -766,6 +863,7 @@ def extract_citations(jurisdiction: str) -> None:
     )
     click.echo(
         f"Bills: {counts['bills']}  "
+        f"title-hits: {counts['title_hits']}  "
         f"summary-hits: {counts['summary_hits']}  "
         f"text-hits: {counts['text_hits']}  "
         f"rows: {counts['rows_written']}"

@@ -19,6 +19,7 @@ import sys
 from datetime import date, datetime
 from typing import Any
 
+from .citation_scope import op_affects_encoding
 from .db import DEFAULT_DB
 from .reencoder_llm import (
     LLMProposal,
@@ -61,18 +62,23 @@ def _bill_op_text_for_section(conn: sqlite3.Connection, bill_id: str,
     return "\n---\n".join(chunks)
 
 
+REJECTED_NOTE_PREFIX = "LLM proposal rejected:"
+
+
 def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
-                     limit: int | None = None, dry_run: bool = False
-                     ) -> dict[str, int]:
+                     limit: int | None = None, dry_run: bool = False,
+                     retry_rejected: bool = False) -> dict[str, int]:
     counts = {"considered": 0, "proposed": 0, "rejected": 0, "skipped": 0}
     variant_rows = conn.execute(
         """
-        SELECT id, encoding_id, file_path, tier, baseline_yaml,
-               effective_from, patched_yaml
-          FROM rule_variants
-         WHERE bill_id = ?
-           AND tier IN ('list', 'structural')
-           AND baseline_yaml IS NOT NULL
+        SELECT v.id, v.encoding_id, v.file_path, v.tier, v.baseline_yaml,
+               v.effective_from, v.patched_yaml, v.note,
+               e.citation AS encoding_citation
+          FROM rule_variants v
+          LEFT JOIN axiom_encodings e ON e.id = v.encoding_id
+         WHERE v.bill_id = ?
+           AND v.tier IN ('list', 'structural')
+           AND v.baseline_yaml IS NOT NULL
         """, (bill_id,),
     ).fetchall()
     bill_row = conn.execute(
@@ -95,16 +101,40 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
         if v["patched_yaml"]:
             counts["skipped"] += 1
             continue
+        # A prior run's validator rejected this variant; the inputs
+        # haven't changed (precompute-variants clears the note when they
+        # do), so re-calling the LLM just re-spends tokens on the same
+        # answer. Opt back in with --retry-rejected.
+        if (not retry_rejected and v["note"]
+                and REJECTED_NOTE_PREFIX in v["note"]):
+            counts["skipped"] += 1
+            continue
         counts["considered"] += 1
 
-        # Find the diff section whose encoding matches this variant.
+        # Find the diff section that drove this variant. Match on the
+        # scope rule (an op in the section affects this variant's
+        # encoding citation) — the old exact file_path == rail-encoding
+        # comparison permanently stranded variants for ancestor files,
+        # because the rail only ever shows one encoding per section.
         target_section = None
         for s in diffs.get("sections", []):
+            ops = (s.get("applied_ops") or []) + (s.get("unapplied_ops") or [])
+            if not ops:
+                continue
             enc = s.get("encoding")
             if enc and enc.get("file_path") == v["file_path"]:
-                if s.get("applied_ops") or s.get("unapplied_ops"):
-                    target_section = s
-                    break
+                target_section = s
+                break
+            if v["encoding_citation"] and any(
+                op_affects_encoding(
+                    v["encoding_citation"],
+                    op.get("target") or s.get("citation", ""),
+                    op.get("kind", ""),
+                )
+                for op in ops
+            ):
+                target_section = s
+                break
         if target_section is None:
             counts["skipped"] += 1
             continue
@@ -132,12 +162,19 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
             if not dry_run:
                 conn.execute(
                     "UPDATE rule_variants SET note = ? WHERE id = ?",
-                    (f"LLM proposal rejected: {exc}", v["id"]),
+                    (f"{REJECTED_NOTE_PREFIX} {exc}", v["id"]),
                 )
             continue
         except Exception as exc:  # network / auth / parse errors
+            # Transient — note it (distinguishable from a validator
+            # rejection) but leave the variant eligible for the next run.
             print(f"     ERROR: {exc}", file=sys.stderr, flush=True)
             counts["rejected"] += 1
+            if not dry_run:
+                conn.execute(
+                    "UPDATE rule_variants SET note = ? WHERE id = ?",
+                    (f"LLM proposal error (retriable): {exc}", v["id"]),
+                )
             continue
 
         counts["proposed"] += 1
@@ -146,7 +183,8 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
                 """
                 UPDATE rule_variants
                    SET patched_yaml = ?, proposed_by = 'llm',
-                       proposed_model = ?, computed_at = datetime('now')
+                       proposed_model = ?, note = NULL,
+                       computed_at = datetime('now')
                  WHERE id = ?
                 """,
                 (proposal.patched_yaml, proposal.model, v["id"]),
@@ -160,7 +198,8 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
 def propose_all(db_path: str = DEFAULT_DB, *,
                 jurisdiction: str | None = None,
                 limit: int | None = None,
-                dry_run: bool = False) -> dict[str, int]:
+                dry_run: bool = False,
+                retry_rejected: bool = False) -> dict[str, int]:
     conn = sqlite3.connect(db_path, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -187,7 +226,8 @@ def propose_all(db_path: str = DEFAULT_DB, *,
     for bill_id in bill_ids:
         per_bill_limit = remaining
         counts = propose_for_bill(conn, bill_id, limit=per_bill_limit,
-                                  dry_run=dry_run)
+                                  dry_run=dry_run,
+                                  retry_rejected=retry_rejected)
         for k, val in counts.items():
             totals[k] = totals.get(k, 0) + val
         if limit is not None:

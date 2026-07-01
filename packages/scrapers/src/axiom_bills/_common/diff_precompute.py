@@ -15,9 +15,12 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from typing import Any
 
+from .citation_scope import is_ancestor, op_affects_encoding
 from .corpus_client import fetch as fetch_corpus
+from .version_rank import stage_rank
 from .amendments import (
     normalize_legal_text,
     slice_subsection,
@@ -44,8 +47,18 @@ def _op_dict(op) -> dict:
     }
 
 
-def _encoding_for(conn: sqlite3.Connection, citation: str) -> dict | None:
-    row = conn.execute(
+def _encoding_for(conn: sqlite3.Connection, citation: str,
+                  ops: list | None = None) -> dict | None:
+    """Pick the encoded file that represents this section, if any.
+
+    Candidates are found by bidirectional prefix match; the pick is
+    op-aware: a file is only eligible if at least one of the section's
+    ops can affect it (an add-end against §2015 can't touch a nested
+    statutes/7/2015/d/2/B.yaml). Preference order: exact citation, then
+    nearest ancestor (the file that *contains* the target), then the
+    deepest affected descendant.
+    """
+    rows = conn.execute(
         """
         SELECT jurisdiction, repo, kind, citation, file_path
         FROM axiom_encodings
@@ -54,44 +67,76 @@ def _encoding_for(conn: sqlite3.Connection, citation: str) -> dict | None:
            OR ? LIKE citation || '.%'
            OR citation LIKE ? || '(%'
            OR citation LIKE ? || '.%'
-        ORDER BY length(citation) DESC
-        LIMIT 1
         """,
         (citation, citation, citation, citation, citation),
-    ).fetchone()
-    if not row:
+    ).fetchall()
+    if not rows:
         return None
-    return {
-        "repo": row["repo"],
-        "kind": row["kind"],
-        "citation": row["citation"],
-        "file_path": row["file_path"],
-        "github_url": f"https://github.com/TheAxiomFoundation/{row['repo']}/blob/main/{row['file_path']}",
-    }
+
+    op_list = [
+        (getattr(op, "target", "") or citation, getattr(op, "kind", ""))
+        for op in (ops or [])
+    ]
+
+    def eligible(row) -> bool:
+        if not op_list:
+            # No parsed ops: only exact/ancestor files may represent the
+            # section — a child file can't stand in for its parent.
+            return row["citation"] == citation or \
+                is_ancestor(row["citation"], citation)
+        return any(
+            op_affects_encoding(row["citation"], target, kind)
+            for target, kind in op_list
+        )
+
+    exact = [r for r in rows if r["citation"] == citation]
+    ancestors = sorted(
+        (r for r in rows if is_ancestor(r["citation"], citation)),
+        key=lambda r: -len(r["citation"]),
+    )
+    descendants = sorted(
+        (r for r in rows if is_ancestor(citation, r["citation"])),
+        key=lambda r: -len(r["citation"]),
+    )
+    for pool in (exact, ancestors, descendants):
+        for row in pool:
+            if eligible(row):
+                return {
+                    "repo": row["repo"],
+                    "kind": row["kind"],
+                    "citation": row["citation"],
+                    "file_path": row["file_path"],
+                    "github_url": f"https://github.com/TheAxiomFoundation/{row['repo']}/blob/main/{row['file_path']}",
+                }
+    return None
 
 
 def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                      db_path: str = DEFAULT_DB) -> dict:
     """Compute the same JSON shape the API returned for /bills/{id}/diffs."""
-    text_row = conn.execute(
-        "SELECT text FROM bill_texts WHERE bill_id = ? ORDER BY fetched_at DESC LIMIT 1",
+    # Highest legislative stage wins; fetched_at only breaks ties.
+    # Ordering by fetched_at alone let an older-stage text shadow an
+    # enrolled one whenever their fetch times interleaved.
+    text_rows = conn.execute(
+        "SELECT version_label, text, text_sha256, fetched_at"
+        "  FROM bill_texts WHERE bill_id = ?",
         (bill_id,),
-    ).fetchone()
+    ).fetchall()
+    text_row = max(
+        text_rows,
+        key=lambda r: (stage_rank(r["version_label"]), r["fetched_at"] or ""),
+        default=None,
+    )
     bill_text = text_row["text"] if text_row else ""
+    text_sha = text_row["text_sha256"] if text_row else None
 
     blocks = parse_bill_amendments(bill_text)
-    extracted = [r["citation"] for r in conn.execute(
-        "SELECT DISTINCT citation FROM bill_citations WHERE bill_id = ? ORDER BY citation",
-        (bill_id,),
-    ).fetchall()]
-    block_targets = {b.target for b in blocks}
-    extra_citations = [c for c in extracted if c not in block_targets]
 
     sections: list[dict] = []
 
     for block in blocks:
         target = block.target
-        encoding = _encoding_for(conn, target)
+        encoding = _encoding_for(conn, target, block.operations)
         prov = fetch_corpus(target, db_path=db_path)
         if prov is None or not prov.body:
             sections.append(_unmatched(target, encoding,
@@ -158,7 +203,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     # 152). The strict policy: only emit sections where the parser
     # actually targeted the citation with an amendment block.
 
-    return {"sections": sections}
+    return {"sections": sections, "source_text_sha256": text_sha}
 
 
 def _section_payload(target: str, encoding: dict | None, prov, *,
@@ -229,6 +274,25 @@ def precompute_all(db_path: str = DEFAULT_DB,
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(bills)")]
     if "diffs" not in cols:
         conn.execute("ALTER TABLE bills ADD COLUMN diffs TEXT")
+    if "touches_rulespec" not in cols:
+        conn.execute(
+            "ALTER TABLE bills ADD COLUMN touches_corpus INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE bills ADD COLUMN touches_rulespec INTEGER NOT NULL DEFAULT 0")
+
+    n_encodings = conn.execute(
+        "SELECT count(*) AS n FROM axiom_encodings"
+    ).fetchone()["n"]
+    if n_encodings == 0:
+        # Recomputing diffs without an indexed rulespec sets
+        # encoding: null on every section — and a later sync-supabase
+        # would overwrite good remote matches with those nulls. Run
+        # `index-encodings --repo <rulespec clone>` first.
+        print(
+            "WARNING: axiom_encodings is empty — diffs will carry no "
+            "rulespec matches. Run index-encodings before precompute-diffs.",
+            file=sys.stderr,
+        )
 
     where = ""
     params: tuple = ()
@@ -247,9 +311,26 @@ def precompute_all(db_path: str = DEFAULT_DB,
             counts["with_sections"] += 1
         if any(s["applied_ops"] for s in payload["sections"]):
             counts["with_ops"] += 1
+        # Materialized relevance flags — same predicate as the
+        # bill_list_summary view: a match needs >=1 parsed amendment op.
+        # Unapplied ops count: they're real amendment instructions the
+        # applier couldn't verify against corpus text (drift, every
+        # redesignate) — excluding them made such bills silently invisible
+        # to the re-encode trigger.
+        touches_rulespec = any(
+            s["encoding"] and (s["applied_ops"] or s["unapplied_ops"])
+            for s in payload["sections"]
+        )
+        touches_corpus = any(
+            s["in_corpus"] and s.get("citation_path")
+            and (s["applied_ops"] or s["unapplied_ops"])
+            for s in payload["sections"]
+        )
         conn.execute(
-            "UPDATE bills SET diffs = ? WHERE id = ?",
-            (json.dumps(payload), bill_id),
+            "UPDATE bills SET diffs = ?, touches_corpus = ?,"
+            " touches_rulespec = ? WHERE id = ?",
+            (json.dumps(payload), int(touches_corpus),
+             int(touches_rulespec), bill_id),
         )
     conn.close()
     return counts
