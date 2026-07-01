@@ -343,6 +343,11 @@ async function bills(
   if (opts.status) q = q.eq("current_status", opts.status);
   const kinds = opts.kind && opts.kind.length ? opts.kind : ALL_KINDS;
   q = q.in("kind", kinds);
+  // Relevance filters server-side on the materialized flags. Filtering
+  // client-side over the 500-row window silently returned nothing when
+  // the matching bills' last actions fell outside the newest 500.
+  if (opts.relevance === "touches_corpus") q = q.eq("touches_corpus", true);
+  if (opts.relevance === "touches_rulespec") q = q.eq("touches_rulespec", true);
   q = q.order("current_status_at", { ascending: false, nullsFirst: false });
 
   const { data: rows, error } = await q.limit(500);
@@ -353,9 +358,10 @@ async function bills(
   const relevance: Relevance = opts.relevance ?? "any";
   const billsOut: BillRow[] = [];
   for (const r of rows ?? []) {
+    // Relevance is already filtered server-side on the materialized
+    // flags; don't re-filter on the best-effort matched summary here —
+    // if that fetch fails, every row would vanish.
     const m = matched.get(r.id) ?? { matched_encodings: [], matched_corpus: [] };
-    if (relevance === "touches_corpus" && m.matched_corpus.length === 0) continue;
-    if (relevance === "touches_rulespec" && m.matched_encodings.length === 0) continue;
     billsOut.push({
       id: r.id, number: r.number, title: r.title, chamber: r.chamber,
       kind: r.kind as BillKind,

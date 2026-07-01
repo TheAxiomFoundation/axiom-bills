@@ -324,12 +324,18 @@ def sync(db_path: str) -> dict[str, int]:
                 "SELECT 1 FROM bills WHERE diffs IS NOT NULL LIMIT 1"
             ).fetchone() is not None
         )
+        # The touch flags travel with diffs — they're derived from it, so
+        # a run that didn't recompute diffs has nothing true to say.
+        include_flags = include_diffs and _has_column(
+            local, "bills", "touches_rulespec")
         bills_rows: list[dict] = []
         diffs_expr = "diffs" if include_diffs else "NULL AS diffs"
+        flags_expr = (", touches_corpus, touches_rulespec"
+                      if include_flags else "")
         for r in local.execute(f"""
             SELECT id, jurisdiction, session_id, chamber, number, title, summary,
                    subjects, sponsors, source_url, current_status, current_status_at,
-                   kind, first_seen_at, last_scraped_at, {diffs_expr}
+                   kind, first_seen_at, last_scraped_at, {diffs_expr}{flags_expr}
               FROM bills
         """):
             bills_rows.append({
@@ -350,6 +356,10 @@ def sync(db_path: str) -> dict[str, int]:
                 "last_scraped_at": r["last_scraped_at"],
                 **({"diffs": json.loads(r["diffs"]) if r["diffs"] else None}
                    if include_diffs else {}),
+                **({
+                    "touches_corpus": _bool(r["touches_corpus"]),
+                    "touches_rulespec": _bool(r["touches_rulespec"]),
+                } if include_flags else {}),
             })
         bill_id_map = _remote_bill_ids(client, bills_rows)
         for row in bills_rows:

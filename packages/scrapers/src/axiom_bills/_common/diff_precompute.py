@@ -226,6 +226,11 @@ def precompute_all(db_path: str = DEFAULT_DB,
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(bills)")]
     if "diffs" not in cols:
         conn.execute("ALTER TABLE bills ADD COLUMN diffs TEXT")
+    if "touches_rulespec" not in cols:
+        conn.execute(
+            "ALTER TABLE bills ADD COLUMN touches_corpus INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            "ALTER TABLE bills ADD COLUMN touches_rulespec INTEGER NOT NULL DEFAULT 0")
 
     n_encodings = conn.execute(
         "SELECT count(*) AS n FROM axiom_encodings"
@@ -258,9 +263,20 @@ def precompute_all(db_path: str = DEFAULT_DB,
             counts["with_sections"] += 1
         if any(s["applied_ops"] for s in payload["sections"]):
             counts["with_ops"] += 1
+        # Materialized relevance flags — same predicate as the
+        # bill_list_summary view: a match needs >=1 APPLIED op.
+        touches_rulespec = any(
+            s["encoding"] and s["applied_ops"] for s in payload["sections"]
+        )
+        touches_corpus = any(
+            s["in_corpus"] and s.get("citation_path") and s["applied_ops"]
+            for s in payload["sections"]
+        )
         conn.execute(
-            "UPDATE bills SET diffs = ? WHERE id = ?",
-            (json.dumps(payload), bill_id),
+            "UPDATE bills SET diffs = ?, touches_corpus = ?,"
+            " touches_rulespec = ? WHERE id = ?",
+            (json.dumps(payload), int(touches_corpus),
+             int(touches_rulespec), bill_id),
         )
     conn.close()
     return counts
