@@ -263,6 +263,54 @@ def test_modifying_op_still_reaches_descendant_files(conn):
     assert v["file_path"] == "statutes/26/32.yaml"
 
 
+def test_unapplied_ops_create_needs_review_variant(conn):
+    """Regression: instructions that failed to auto-apply to corpus text
+    (every redesignate, drift cases) produced no variant at all — the
+    bill silently vanished from the re-encode trigger."""
+    conn.execute(
+        "UPDATE bills SET diffs=? WHERE id='b1'",
+        (json.dumps({
+            "source_text_sha256": "sha-un",
+            "sections": [{
+                "citation": "26 USC 32(a)",
+                "applied_ops": [],
+                "unapplied_ops": [{
+                    "kind": "redesignate",
+                    "target": "26 USC 32(a)",
+                    "needle": "",
+                    "payload": "",
+                    "note": "redesignation is not auto-applied",
+                }],
+            }],
+        }),),
+    )
+    counts = compute_for_bill(conn, "b1")
+    assert counts["variants"] == 1
+    v = _variant(conn)
+    assert v["tier"] == "structural"
+    assert v["patched_yaml"] is None
+    assert "could not be auto-applied" in v["note"]
+    assert v["baseline_yaml"]  # UI still gets the Current tab
+
+
+def test_unapplied_op_flip_invalidates_variant(conn):
+    """An op moving between applied and unapplied changes the meaning —
+    the fingerprint must catch it."""
+    compute_for_bill(conn, "b1")
+    fp1 = _variant(conn)["source_ops_fingerprint"]
+    payload = json.loads(conn.execute(
+        "SELECT diffs FROM bills WHERE id='b1'").fetchone()["diffs"])
+    sec = payload["sections"][0]
+    sec["unapplied_ops"] = sec.pop("applied_ops")
+    sec["applied_ops"] = []
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    v = _variant(conn)
+    assert v["source_ops_fingerprint"] != fp1
+    assert v["patched_yaml"] is None
+
+
 def test_missing_baseline_records_no_op(conn, monkeypatch, tmp_path):
     monkeypatch.setenv("RULESPEC_US_ROOT", str(tmp_path / "nowhere"))
     counts = compute_for_bill(conn, "b1")

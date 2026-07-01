@@ -225,7 +225,7 @@ _USC_PAREN_RE = re.compile(
     r"(?:Sec\.?\s*|§\s*)?"   # optional "Sec." prefix as in "(6 U.S.C. Sec. 279)"
     r"(?P<sect>\d+[a-zA-Z]{0,3}(?:-\d+[a-zA-Z]{0,3})?)"
     r"(?P<sub>(?:\s*\([^)]+\))*)"
-    r"(?:\s+note)?\s*\)",
+    r"(?:\s+note)?(?:\s+et\s+seq\.?)?\s*\)",
     re.IGNORECASE,
 )
 
@@ -358,6 +358,16 @@ def _resolve_target(header_text: str, section_with_subs: str,
     if chain_title and _CHAIN_REF_RE.search(header_text):
         return f"{chain_title} USC {section_with_subs}"
 
+    # The header names an Act we couldn't map (e.g. "Section 1 of the
+    # Act of July 31, 1947" with an et-seq parenthetical we also missed).
+    # Falling through to the bill-level context title fabricated a
+    # confident wrong citation ("26 USC 1") — worse than admitting the
+    # target is unresolved. "such Act" chain references are exempt: they
+    # refer to whatever the context established.
+    if re.search(r"\bAct\b", header_text) and \
+            not re.search(r"\bsuch\s+Act\b", header_text):
+        return None
+
     if context_title:
         return f"{context_title} USC {section_with_subs}"
     return None
@@ -455,7 +465,12 @@ _BLOCK_HEADER_RE = re.compile(
     r"(?P<header>"
     r"(?-i:Section|SECTION)\s+"
     r"(?P<sect>\d+[a-zA-Z]{0,3}(?:-\d+[a-zA-Z]{0,3})?(?:\([^)]+\))*)"
-    r".{0,200}?"
+    # Tempered gap: must not bridge across another "Section N" start.
+    # Without this, the bill's own enumerator ("SECTION 1. EXTENSION OF
+    # ...") swallowed the real header ("Section 48(c)(1)(E) of the
+    # Internal Revenue Code ... is amended") and the block was
+    # attributed to section 1 of whatever title context resolved.
+    r"(?:(?!(?-i:Section|SECTION)\s+\d).){0,200}?"
     r")"
     r"\s+is\s+amended"
     + _SEP_RE,
@@ -475,7 +490,8 @@ _PREFIXED_BLOCK_HEADER_RE = re.compile(
     + r"(?:" + _LEVEL_LC + r"\s+\((?P<l3>[^)]+)\)\s+of\s+)?"
     + r"(?-i:section|Section|SECTION)\s+"
     + r"(?P<sect>\d+[a-zA-Z]{0,3}(?:-\d+[a-zA-Z]{0,3})?(?:\([^)]+\))*)"
-    + r".{0,200}?"
+    # Same tempered gap as _BLOCK_HEADER_RE — never bridge a "Section N".
+    + r"(?:(?!(?-i:Section|SECTION)\s+\d).){0,200}?"
     + r")"
     + r"\s+is\s+amended"
     + _SEP_RE,

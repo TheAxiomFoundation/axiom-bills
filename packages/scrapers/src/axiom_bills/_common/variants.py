@@ -26,7 +26,21 @@ from pathlib import Path
 
 from .citation_scope import op_affects_encoding
 from .db import DEFAULT_DB
-from .reencoder import Atom, Op, Tier, reencode_rule_file
+from .reencoder import Atom, Op, Tier, _classify_op, reencode_rule_file
+
+
+def _needs_review_tier(ops: list[Op]) -> Tier:
+    """Tier for a variant driven by unapplied instructions.
+
+    Never SUBSTITUTION/NO_OP — nothing was verified against corpus
+    text, so a human (or the LLM pass) has to look regardless.
+    """
+    tiers = {_classify_op(op) for op in ops}
+    if Tier.STRUCTURAL in tiers:
+        return Tier.STRUCTURAL
+    if Tier.LIST in tiers:
+        return Tier.LIST
+    return Tier.STRUCTURAL
 
 
 # Where the rulespec-us checkout lives on disk. The frontend will hit
@@ -40,7 +54,7 @@ RULESPEC_ROOT = Path(
 def _load_atoms(conn: sqlite3.Connection, encoding_id: str) -> list[Atom]:
     rows = conn.execute(
         """
-        SELECT r.rule_name, a.atom_path, a.atom_kind, a.text
+        SELECT r.rule_name, r.rule_source, a.atom_path, a.atom_kind, a.text
           FROM encoded_rules r
           JOIN encoded_rule_atoms a ON a.rule_id = r.id
          WHERE r.encoding_id = ?
@@ -54,6 +68,7 @@ def _load_atoms(conn: sqlite3.Connection, encoding_id: str) -> list[Atom]:
             path=row["atom_path"] or "",
             kind=row["atom_kind"] or "",
             text=row["text"] or "",
+            rule_source=row["rule_source"] or "",
         ))
     return out
 
@@ -89,13 +104,19 @@ def _effective_from_for_bill(row: sqlite3.Row) -> date:
         return date.today()
 
 
-def _ops_fingerprint(ops: list[Op], baseline_yaml: str | None) -> str:
-    """Stable hash of everything the reencoder's output depends on."""
+def _ops_fingerprint(ops: list[tuple[Op, bool]],
+                     baseline_yaml: str | None) -> str:
+    """Stable hash of everything the variant's output depends on.
+
+    `ops` pairs each op with its applied flag — an op moving between
+    applied and unapplied (corpus drift) changes what the variant means,
+    so it must invalidate.
+    """
     doc = {
         "ops": [
             {"kind": o.kind, "target": o.target,
-             "needle": o.needle, "payload": o.payload}
-            for o in ops
+             "needle": o.needle, "payload": o.payload, "applied": applied}
+            for o, applied in ops
         ],
         "baseline_sha256": (
             hashlib.sha256(baseline_yaml.encode()).hexdigest()
@@ -128,33 +149,49 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
     # Group all bill ops by their target encoded file. A single rule
     # YAML may encode multiple sections; we want every op against any of
     # those sections fed to the reencoder in one call so it can
-    # cross-reference atoms.
-    ops_by_encoding_id: dict[str, list[Op]] = {}
+    # cross-reference atoms. Unapplied ops (parsed instructions that
+    # couldn't be applied to corpus text — including every redesignate)
+    # are tracked too: they can't be auto-patched, but silently dropping
+    # them meant a bill could amend an encoded rule with no variant and
+    # no flag at all.
+    applied_by_enc: dict[str, list[Op]] = {}
+    unapplied_by_enc: dict[str, list[Op]] = {}
     encoding_by_id: dict[str, sqlite3.Row] = {}
     for section in payload.get("sections", []):
-        if not section.get("applied_ops"):
+        section_ops = (
+            [(raw, True) for raw in section.get("applied_ops") or []]
+            + [(raw, False) for raw in section.get("unapplied_ops") or []]
+        )
+        if not section_ops:
             continue
         target_citation = section["citation"]
         for enc in _encodings_for_section(conn, target_citation):
-            for raw_op in section["applied_ops"]:
+            for raw_op, was_applied in section_ops:
                 op_kind = raw_op["kind"]
                 op_target = raw_op.get("target") or target_citation
-                # Prefix matching finds every *related* file; only feed
-                # the reencoder ops that can actually *affect* this one
-                # (an add-end against §2015 can't change what
+                # Prefix matching finds every *related* file; only keep
+                # ops that can actually *affect* this one (an add-end
+                # against §2015 can't change what
                 # statutes/7/2015/d/2/B.yaml encodes).
                 if not op_affects_encoding(enc["citation"], op_target, op_kind):
                     continue
                 encoding_by_id[enc["id"]] = enc
-                ops_by_encoding_id.setdefault(enc["id"], []).append(Op(
+                bucket = applied_by_enc if was_applied else unapplied_by_enc
+                bucket.setdefault(enc["id"], []).append(Op(
                     kind=op_kind,
                     target=op_target,
                     needle=raw_op.get("needle", ""),
                     payload=raw_op.get("payload", ""),
                 ))
 
-    for encoding_id, ops in ops_by_encoding_id.items():
+    for encoding_id in encoding_by_id:
         enc = encoding_by_id[encoding_id]
+        applied_ops = applied_by_enc.get(encoding_id, [])
+        unapplied_ops = unapplied_by_enc.get(encoding_id, [])
+        fingerprint_ops = (
+            [(o, True) for o in applied_ops]
+            + [(o, False) for o in unapplied_ops]
+        )
         file_path = enc["file_path"]
         repo = enc["repo"]
         repo_root = (Path(os.environ.get(
@@ -173,44 +210,71 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
                 diff_summary=None,
                 note=f"Baseline YAML not on disk at {baseline_path}",
                 effective_from=eff_from,
-                ops_fingerprint=_ops_fingerprint(ops, None),
+                ops_fingerprint=_ops_fingerprint(fingerprint_ops, None),
                 text_sha256=text_sha,
                 proposed_by=None,
             )
             counts["unchanged" if outcome == "unchanged" else "no_op"] += 1
             continue
         baseline_yaml = baseline_path.read_text()
-        fingerprint = _ops_fingerprint(ops, baseline_yaml)
-        atoms = _load_atoms(conn, encoding_id)
-        result = reencode_rule_file(
-            baseline_yaml, ops, atoms, effective_from=eff_from,
-        )
-        auto_patched = result.tier == Tier.SUBSTITUTION
+        fingerprint = _ops_fingerprint(fingerprint_ops, baseline_yaml)
+
+        if applied_ops:
+            atoms = _load_atoms(conn, encoding_id)
+            result = reencode_rule_file(
+                baseline_yaml, applied_ops, atoms, effective_from=eff_from,
+            )
+            tier = result.tier
+            patched_rules = result.patched_rules
+            patched_yaml = result.patched_yaml if tier == Tier.SUBSTITUTION else None
+            diff_summary = result.diff_summary or None
+            note = result.note or None
+            if unapplied_ops:
+                extra = (f"{len(unapplied_ops)} additional instruction(s) "
+                         "could not be auto-applied to corpus text — "
+                         "needs review.")
+                note = f"{note} {extra}" if note else extra
+                # A partially-understood amendment isn't a clean no-op.
+                if tier == Tier.NO_OP:
+                    tier = _needs_review_tier(unapplied_ops)
+        else:
+            # Unapplied-only: the bill's parsed instructions target this
+            # encoded file but couldn't be applied mechanically. Record
+            # a needs-review variant so Pipeline B (and the LLM pass)
+            # still sees it.
+            tier = _needs_review_tier(unapplied_ops)
+            patched_rules = []
+            patched_yaml = None
+            diff_summary = None
+            note = (f"{len(unapplied_ops)} amendment instruction(s) parsed "
+                    "but could not be auto-applied to corpus text — "
+                    "needs review.")
+
         outcome = _upsert_variant(
             conn, bill_id, encoding_id, file_path,
-            tier=result.tier, patched_rule_names=result.patched_rules,
+            tier=tier, patched_rule_names=patched_rules,
             # Always store the baseline — the bill page wants to render a
             # "current" tab for every variant, not just auto-patchable ones.
             baseline_yaml=baseline_yaml,
-            patched_yaml=result.patched_yaml if auto_patched else None,
-            diff_summary=result.diff_summary or None,
-            note=result.note or None,
+            patched_yaml=patched_yaml,
+            diff_summary=diff_summary,
+            note=note,
             effective_from=eff_from,
             ops_fingerprint=fingerprint,
             text_sha256=text_sha,
-            proposed_by="auto" if auto_patched else None,
+            proposed_by="auto" if patched_yaml else None,
         )
         if outcome == "unchanged":
             counts["unchanged"] += 1
         else:
             counts["variants"] += 1
-            counts[result.tier.value] = counts.get(result.tier.value, 0) + 1
+            counts[tier.value] = counts.get(tier.value, 0) + 1
 
     # Drop variants for files this bill's current diffs no longer touch
     # (e.g. an engrossed text dropped a section) — otherwise they'd claim
     # the bill still patches a rule it no longer amends.
     current_files = {
-        encoding_by_id[eid]["file_path"] for eid in ops_by_encoding_id
+        encoding_by_id[eid]["file_path"] for eid in encoding_by_id
     }
     for row in conn.execute(
         "SELECT id, file_path FROM rule_variants WHERE bill_id=?",

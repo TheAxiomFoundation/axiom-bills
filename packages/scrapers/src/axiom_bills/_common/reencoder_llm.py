@@ -323,6 +323,14 @@ def propose_via_anthropic(
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        # Truncated YAML would just fail validation with a confusing
+        # error; surface the real cause. RuntimeError (not
+        # ProposalRejected) so the caller records it as retriable.
+        raise RuntimeError(
+            f"LLM response truncated at max_tokens for {citation} — "
+            "baseline may be too large for one-shot re-encoding."
+        )
     text_blocks = [b.text for b in resp.content if getattr(b, "text", None)]
     raw = "\n".join(text_blocks)
     yaml_text = parse_response(raw)

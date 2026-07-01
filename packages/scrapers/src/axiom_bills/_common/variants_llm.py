@@ -19,6 +19,7 @@ import sys
 from datetime import date, datetime
 from typing import Any
 
+from .citation_scope import op_affects_encoding
 from .db import DEFAULT_DB
 from .reencoder_llm import (
     LLMProposal,
@@ -70,12 +71,14 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
     counts = {"considered": 0, "proposed": 0, "rejected": 0, "skipped": 0}
     variant_rows = conn.execute(
         """
-        SELECT id, encoding_id, file_path, tier, baseline_yaml,
-               effective_from, patched_yaml, note
-          FROM rule_variants
-         WHERE bill_id = ?
-           AND tier IN ('list', 'structural')
-           AND baseline_yaml IS NOT NULL
+        SELECT v.id, v.encoding_id, v.file_path, v.tier, v.baseline_yaml,
+               v.effective_from, v.patched_yaml, v.note,
+               e.citation AS encoding_citation
+          FROM rule_variants v
+          LEFT JOIN axiom_encodings e ON e.id = v.encoding_id
+         WHERE v.bill_id = ?
+           AND v.tier IN ('list', 'structural')
+           AND v.baseline_yaml IS NOT NULL
         """, (bill_id,),
     ).fetchall()
     bill_row = conn.execute(
@@ -108,14 +111,30 @@ def propose_for_bill(conn: sqlite3.Connection, bill_id: str, *,
             continue
         counts["considered"] += 1
 
-        # Find the diff section whose encoding matches this variant.
+        # Find the diff section that drove this variant. Match on the
+        # scope rule (an op in the section affects this variant's
+        # encoding citation) — the old exact file_path == rail-encoding
+        # comparison permanently stranded variants for ancestor files,
+        # because the rail only ever shows one encoding per section.
         target_section = None
         for s in diffs.get("sections", []):
+            ops = (s.get("applied_ops") or []) + (s.get("unapplied_ops") or [])
+            if not ops:
+                continue
             enc = s.get("encoding")
             if enc and enc.get("file_path") == v["file_path"]:
-                if s.get("applied_ops") or s.get("unapplied_ops"):
-                    target_section = s
-                    break
+                target_section = s
+                break
+            if v["encoding_citation"] and any(
+                op_affects_encoding(
+                    v["encoding_citation"],
+                    op.get("target") or s.get("citation", ""),
+                    op.get("kind", ""),
+                )
+                for op in ops
+            ):
+                target_section = s
+                break
         if target_section is None:
             counts["skipped"] += 1
             continue

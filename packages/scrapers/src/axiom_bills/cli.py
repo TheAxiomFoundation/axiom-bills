@@ -863,6 +863,7 @@ def extract_citations(jurisdiction: str) -> None:
     )
     click.echo(
         f"Bills: {counts['bills']}  "
+        f"title-hits: {counts['title_hits']}  "
         f"summary-hits: {counts['summary_hits']}  "
         f"text-hits: {counts['text_hits']}  "
         f"rows: {counts['rows_written']}"

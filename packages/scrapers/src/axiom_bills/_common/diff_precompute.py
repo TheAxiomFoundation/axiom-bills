@@ -20,6 +20,7 @@ from typing import Any
 
 from .citation_scope import is_ancestor, op_affects_encoding
 from .corpus_client import fetch as fetch_corpus
+from .version_rank import stage_rank
 from .amendments import (
     normalize_legal_text,
     slice_subsection,
@@ -113,11 +114,19 @@ def _encoding_for(conn: sqlite3.Connection, citation: str,
 def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                      db_path: str = DEFAULT_DB) -> dict:
     """Compute the same JSON shape the API returned for /bills/{id}/diffs."""
-    text_row = conn.execute(
-        "SELECT text, text_sha256 FROM bill_texts WHERE bill_id = ?"
-        " ORDER BY fetched_at DESC LIMIT 1",
+    # Highest legislative stage wins; fetched_at only breaks ties.
+    # Ordering by fetched_at alone let an older-stage text shadow an
+    # enrolled one whenever their fetch times interleaved.
+    text_rows = conn.execute(
+        "SELECT version_label, text, text_sha256, fetched_at"
+        "  FROM bill_texts WHERE bill_id = ?",
         (bill_id,),
-    ).fetchone()
+    ).fetchall()
+    text_row = max(
+        text_rows,
+        key=lambda r: (stage_rank(r["version_label"]), r["fetched_at"] or ""),
+        default=None,
+    )
     bill_text = text_row["text"] if text_row else ""
     text_sha = text_row["text_sha256"] if text_row else None
 
@@ -303,12 +312,18 @@ def precompute_all(db_path: str = DEFAULT_DB,
         if any(s["applied_ops"] for s in payload["sections"]):
             counts["with_ops"] += 1
         # Materialized relevance flags — same predicate as the
-        # bill_list_summary view: a match needs >=1 APPLIED op.
+        # bill_list_summary view: a match needs >=1 parsed amendment op.
+        # Unapplied ops count: they're real amendment instructions the
+        # applier couldn't verify against corpus text (drift, every
+        # redesignate) — excluding them made such bills silently invisible
+        # to the re-encode trigger.
         touches_rulespec = any(
-            s["encoding"] and s["applied_ops"] for s in payload["sections"]
+            s["encoding"] and (s["applied_ops"] or s["unapplied_ops"])
+            for s in payload["sections"]
         )
         touches_corpus = any(
-            s["in_corpus"] and s.get("citation_path") and s["applied_ops"]
+            s["in_corpus"] and s.get("citation_path")
+            and (s["applied_ops"] or s["unapplied_ops"])
             for s in payload["sections"]
         )
         conn.execute(

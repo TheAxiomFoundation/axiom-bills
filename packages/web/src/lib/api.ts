@@ -200,31 +200,32 @@ const AXIOM_APP_URL =
 // ─── Internal helpers ───────────────────────────────────────────────
 
 function buildMatchedForBill(diffs: BillDiffs | null) {
-  // matched_encodings: strict definition — only count an encoding as
-  // "touched" if the bill has an APPLIED amendment op against a section
-  // whose citation matches an encoding. A bill that merely cites §X in a
-  // findings/definitions clause doesn't force a re-encode, so it
-  // shouldn't claim "touches rulespec".
+  // matched_encodings: an encoding counts as "touched" when the bill
+  // has a PARSED amendment op (applied or unapplied) against a section
+  // whose citation matches. A bill that merely cites §X in a findings/
+  // definitions clause doesn't force a re-encode; but an instruction
+  // the applier couldn't verify against corpus text is still a real
+  // amendment and must not vanish from the trigger.
   const matched_encodings: MatchedEncoding[] = [];
   const seenE = new Set<string>();
   if (diffs) {
     for (const sec of diffs.sections) {
       if (!sec.encoding) continue;
-      if (sec.applied_ops.length === 0) continue;
+      if (sec.applied_ops.length === 0 && sec.unapplied_ops.length === 0) continue;
       if (seenE.has(sec.encoding.file_path)) continue;
       seenE.add(sec.encoding.file_path);
       matched_encodings.push(sec.encoding);
     }
   }
 
-  // matched_corpus: corpus rows the bill ACTUALLY amends. Sections with
-  // zero applied ops (drift / unparsed / cross-reference) don't count.
+  // matched_corpus: corpus rows the bill amends (parsed ops, applied or
+  // not). Pure cross-references still don't count.
   const matched_corpus: MatchedCorpus[] = [];
   const seenC = new Set<string>();
   if (diffs) {
     for (const sec of diffs.sections) {
       if (!sec.in_corpus || !sec.citation_path) continue;
-      if (sec.applied_ops.length === 0) continue;
+      if (sec.applied_ops.length === 0 && sec.unapplied_ops.length === 0) continue;
       if (seenC.has(sec.citation_path)) continue;
       seenC.add(sec.citation_path);
       matched_corpus.push({
