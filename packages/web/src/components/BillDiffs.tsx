@@ -18,7 +18,21 @@ export function BillDiffs({ billId }: { billId: string }) {
 
   if (err) return null;
   if (!data) return <p className="hint">Computing diffs…</p>;
-  if (data.sections.length === 0) return null;
+
+  // Variants whose encoded file no diff section references — e.g. the
+  // section match was lost on a re-scrape, or the variant came from a
+  // second encoding matching the same section. Render them below the
+  // tabs so a computed (possibly LLM-drafted) patch is never invisible.
+  const sectionPaths = new Set(
+    data.sections.map((s) => s.encoding?.file_path).filter(Boolean),
+  );
+  const orphanVariants = variants.filter((v) => !sectionPaths.has(v.file_path));
+
+  if (data.sections.length === 0) {
+    return orphanVariants.length > 0
+      ? <OrphanVariantsSection variants={orphanVariants} />
+      : null;
+  }
 
   // Tabs only for sections where we have *something* to show.
   const candidates = data.sections.filter((s) => s.in_corpus || s.encoding);
@@ -112,6 +126,43 @@ export function BillDiffs({ billId }: { billId: string }) {
       </nav>
 
       <SectionView section={section} variants={variants} />
+
+      {orphanVariants.length > 0 && (
+        <OrphanVariantsSection variants={orphanVariants} />
+      )}
+    </section>
+  );
+}
+
+function OrphanVariantsSection({ variants }: { variants: RuleVariant[] }) {
+  return (
+    <section className="diffs">
+      <h3>Encoded rule variants</h3>
+      <p className="hint">
+        Rule files this bill's amendments touch in <code>rulespec-us</code>.
+      </p>
+      {variants.map((v) => (
+        <div className="diff-section" key={v.id}>
+          <aside className="diff-rail">
+            <div className="rulespec-panel rulespec-panel--encoded">
+              <p className="rulespec-eyebrow">RuleSpec encoding</p>
+              <h4 className="rulespec-title">
+                {v.encoding ? (
+                  <a href={v.encoding.github_url} target="_blank" rel="noreferrer">
+                    {v.file_path}
+                  </a>
+                ) : (
+                  v.file_path
+                )}
+              </h4>
+              <RuleSpecVariantTabs
+                variant={v}
+                sectionCitation={v.encoding?.citation ?? v.file_path}
+              />
+            </div>
+          </aside>
+        </div>
+      ))}
     </section>
   );
 }

@@ -199,14 +199,7 @@ const AXIOM_APP_URL =
 
 // ─── Internal helpers ───────────────────────────────────────────────
 
-function buildMatchedForBill(
-  diffs: BillDiffs | null,
-  _citationRows: { citation: string }[],
-  _encodingRows: {
-    repo: string; kind: "statute" | "regulation" | "policy";
-    citation: string; file_path: string;
-  }[],
-) {
+function buildMatchedForBill(diffs: BillDiffs | null) {
   // matched_encodings: strict definition — only count an encoding as
   // "touched" if the bill has an APPLIED amendment op against a section
   // whose citation matches an encoding. A bill that merely cites §X in a
@@ -282,12 +275,16 @@ async function coverage(): Promise<CoverageSummary> {
 }
 
 async function kindCounts(code: string): Promise<KindCounts> {
-  const base = supabase.from("bills").select("id", { count: "exact", head: true })
-    .eq("jurisdiction", code);
-  const kinds: BillKind[] = ALL_KINDS;
   const out = {} as KindCounts;
-  await Promise.all(kinds.map(async (k) => {
-    const { count } = await base.eq("kind", k);
+  // Build a fresh query per kind: supabase-js builders are mutable, so
+  // sharing one and calling .eq("kind", k) seven times stacks seven
+  // mutually-exclusive filters onto the same request (= zero counts).
+  await Promise.all(ALL_KINDS.map(async (k) => {
+    const { count } = await supabase
+      .from("bills")
+      .select("id", { count: "exact", head: true })
+      .eq("jurisdiction", code)
+      .eq("kind", k);
     out[k] = count ?? 0;
   }));
   return out;
@@ -392,10 +389,6 @@ async function bill(id: string): Promise<BillDetail> {
   if (error) throw error;
   if (!r) throw new Error("bill not found");
 
-  const { data: encodings } = await supabase
-    .from("axiom_encodings")
-    .select("repo, kind, citation, file_path");
-
   const actions: BillAction[] = (r.bill_actions ?? [])
     .sort((a: any, b: any) => a.occurred_at < b.occurred_at ? -1 : 1)
     .map((a: any) => ({
@@ -421,8 +414,6 @@ async function bill(id: string): Promise<BillDetail> {
 
   const { matched_encodings, matched_corpus } = buildMatchedForBill(
     r.diffs as BillDiffs | null,
-    (r.bill_citations ?? []) as { citation: string }[],
-    (encodings ?? []) as any,
   );
 
   return {

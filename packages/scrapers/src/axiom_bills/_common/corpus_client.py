@@ -8,7 +8,8 @@ Anon access is granted via the `corpus` schema profile. We expose:
 
 Caching matters: every bill detail view hits this for every cited
 section, and the data only changes when axiom-corpus does a new release.
-A `--force` knob (and a CLI command to clear) is wired through.
+`fetch(..., force=True)` (Python-level only) busts the cache when
+corpus ships a new version.
 """
 from __future__ import annotations
 

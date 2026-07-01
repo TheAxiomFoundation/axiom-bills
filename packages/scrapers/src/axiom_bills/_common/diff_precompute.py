@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 from typing import Any
 
 from .corpus_client import fetch as fetch_corpus
@@ -74,18 +75,14 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                      db_path: str = DEFAULT_DB) -> dict:
     """Compute the same JSON shape the API returned for /bills/{id}/diffs."""
     text_row = conn.execute(
-        "SELECT text FROM bill_texts WHERE bill_id = ? ORDER BY fetched_at DESC LIMIT 1",
+        "SELECT text, text_sha256 FROM bill_texts WHERE bill_id = ?"
+        " ORDER BY fetched_at DESC LIMIT 1",
         (bill_id,),
     ).fetchone()
     bill_text = text_row["text"] if text_row else ""
+    text_sha = text_row["text_sha256"] if text_row else None
 
     blocks = parse_bill_amendments(bill_text)
-    extracted = [r["citation"] for r in conn.execute(
-        "SELECT DISTINCT citation FROM bill_citations WHERE bill_id = ? ORDER BY citation",
-        (bill_id,),
-    ).fetchall()]
-    block_targets = {b.target for b in blocks}
-    extra_citations = [c for c in extracted if c not in block_targets]
 
     sections: list[dict] = []
 
@@ -158,7 +155,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     # 152). The strict policy: only emit sections where the parser
     # actually targeted the citation with an amendment block.
 
-    return {"sections": sections}
+    return {"sections": sections, "source_text_sha256": text_sha}
 
 
 def _section_payload(target: str, encoding: dict | None, prov, *,
@@ -229,6 +226,20 @@ def precompute_all(db_path: str = DEFAULT_DB,
     cols = [r["name"] for r in conn.execute("PRAGMA table_info(bills)")]
     if "diffs" not in cols:
         conn.execute("ALTER TABLE bills ADD COLUMN diffs TEXT")
+
+    n_encodings = conn.execute(
+        "SELECT count(*) AS n FROM axiom_encodings"
+    ).fetchone()["n"]
+    if n_encodings == 0:
+        # Recomputing diffs without an indexed rulespec sets
+        # encoding: null on every section — and a later sync-supabase
+        # would overwrite good remote matches with those nulls. Run
+        # `index-encodings --repo <rulespec clone>` first.
+        print(
+            "WARNING: axiom_encodings is empty — diffs will carry no "
+            "rulespec matches. Run index-encodings before precompute-diffs.",
+            file=sys.stderr,
+        )
 
     where = ""
     params: tuple = ()

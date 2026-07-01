@@ -18,14 +18,19 @@ import re
 from axiom_bills._common.citations import regex_extractor
 
 
-# IRC = Title 26. The codifier rarely cross-refs IRC to other titles, so
-# 'Internal Revenue Code' → Title 26 is a safe simplifying assumption.
-ACT_TO_TITLE: dict[str, str] = {
-    "internal revenue code":            "26",
-    "social security act":              "42",
-    "food and nutrition act":           "7",
-    "affordable care act":              "42",
-    "patient protection and affordable care act": "42",
+# Act-name → (USC title, section offset). Only acts whose section
+# numbers map *arithmetically* onto USC sections belong here:
+#   * IRC — codified verbatim as Title 26 (IRC §32 = 26 USC 32).
+#   * Food and Nutrition Act of 2008 — §N = 7 USC N+2009 (§3 → 2012,
+#     §6 → 2015, §8 → 2017).
+# The Social Security Act and ACA are deliberately absent: their
+# codification is non-linear (SSA §1902 → 42 USC 1396a, ACA sections
+# scatter across 42 USC ch. 157 and amendments to other acts), so a
+# 1:1 mapping emitted *wrong* citations that could never match the
+# corpus or encodings. Better to drop those matches than mis-cite.
+ACT_RULES: dict[str, tuple[str, int]] = {
+    "internal revenue code":       ("26", 0),
+    "food and nutrition act":      ("7", 2009),
 }
 
 
@@ -55,10 +60,19 @@ def _normalize_cfr(match: re.Match[str]) -> str:
 
 def _normalize_act_section(match: re.Match[str]) -> str:
     act = match.group("act").lower().strip()
-    title = ACT_TO_TITLE.get(act)
-    if not title:
+    # 'Food and Nutrition Act of 2008' → key without the year suffix.
+    act = re.sub(r"\s+of\s+\d{4}$", "", act)
+    rule = ACT_RULES.get(act)
+    if not rule:
         return ""
+    title, offset = rule
     section = match.group("section")
+    if offset:
+        # Offsets only apply to purely numeric sections; lettered
+        # sections (e.g. '45A') never occur in offset-mapped acts.
+        if not section.isdigit():
+            return ""
+        section = str(int(section) + offset)
     sub = _subscripts(match)
     return f"{title} USC {section}{sub}"
 
@@ -82,15 +96,13 @@ RAW_PATTERNS: list[tuple[str, callable]] = [
         _normalize_cfr,
     ),
     # 'section 32(a)(1) of the Internal Revenue Code'
+    # 'section 6(b) of the Food and Nutrition Act of 2008'
     (
         r"section\s+(?P<section>\d+[A-Z]?)"
         r"(?P<sub>(?:\s*\([0-9a-zA-Z]+\))*)"
         r"\s+of\s+(?:the\s+)?(?P<act>"
-        r"Internal Revenue Code"
-        r"|Social Security Act"
+        r"Internal Revenue Code(?:\s+of\s+\d{4})?"
         r"|Food and Nutrition Act(?:\s+of\s+\d{4})?"
-        r"|Patient Protection and Affordable Care Act"
-        r"|Affordable Care Act"
         r")",
         _normalize_act_section,
     ),

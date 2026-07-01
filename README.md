@@ -133,6 +133,36 @@ meantime with `cd packages/web && vercel --prod`.
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.
 
+## The encoding loop (Pipeline B)
+
+When a bill's amendment ops target a section that rulespec-us encodes,
+the tracker computes a *rule variant*: the baseline YAML plus a patched
+version reflecting the bill. Scalar substitutions patch automatically;
+list/structural changes get an LLM-drafted proposal
+(`propose-llm-variants`, needs `ANTHROPIC_API_KEY`).
+
+```
+index-encodings --repo ~/rulespec-us   # rulespec inventory → axiom_encodings
+fetch-texts / precompute-diffs         # bill text → parsed ops (bills.diffs)
+precompute-variants                    # ops × encodings → rule_variants
+hydrate-variants                       # reuse prior LLM proposals from Supabase
+propose-llm-variants                   # draft the rest via Claude
+sync-supabase                          # push everything up
+export-variants --out ./patches        # patched YAML + manifest for downstream
+```
+
+The loop is *iterative*: each variant row stores a fingerprint of the
+ops + baseline it was computed from (`source_ops_fingerprint`) and the
+bill text hash (`source_text_sha256`). Re-running with unchanged inputs
+is a no-op — LLM proposals survive. When an engrossed/enrolled text
+changes the ops, the variant recomputes, the stale proposal is cleared
+with a note, and the next `propose-llm-variants` re-drafts it.
+
+The hourly federal refresh workflow runs the whole chain (it checks out
+rulespec-us and indexes it each run). Downstream consumers read the
+`bills.current_rule_patches` view in Supabase (latest patched YAML per
+bill/file with bill status attached) or use `export-variants` locally.
+
 ## How a scrape works
 
 ```
