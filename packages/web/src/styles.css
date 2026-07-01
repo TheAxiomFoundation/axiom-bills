@@ -1544,6 +1544,9 @@ table.bills td a:hover { color: var(--color-accent); }
   background: #fff; border: 1px solid #d8d4c8; border-top: none;
   padding: 10px; margin: 0; font-size: 11px; line-height: 1.4;
   max-height: 320px; overflow: auto;
+  /* Soft-wrap: the rail is ~280px wide, so long source/citation lines
+     forced a horizontal scrollbar that hid most of each line. */
+  white-space: pre-wrap; word-break: break-word;
   font-family: "SF Mono", monospace; color: #1c1917;
 }
 .rs-variant-todo {
