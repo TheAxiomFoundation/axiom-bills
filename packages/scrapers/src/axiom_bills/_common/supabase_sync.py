@@ -131,7 +131,16 @@ def _remote_rows_by_in(
             {
                 "select": select,
                 column: f"in.({','.join(batch)})",
-                "order": "id.asc",
+                # Order by the FILTER column (then id for stable Range
+                # pagination), not id alone. Ordering by id.asc let Postgres
+                # walk the id PK index applying the `column in (...)` filter
+                # row-by-row until it filled the 1000-row window; on a large
+                # child table like bill_actions that scan grew into a 57014
+                # statement timeout. Leading with the filter column forces the
+                # planner onto the index that already covers it
+                # (e.g. idx_actions_bill_occurred on bill_actions(bill_id,...)),
+                # so it probes just the matching rows.
+                "order": f"{column}.asc,id.asc",
             },
         ))
     return rows

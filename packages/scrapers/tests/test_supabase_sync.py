@@ -161,3 +161,35 @@ def test_remote_bill_ids_does_not_fall_back_to_ambiguous_bill_number(monkeypatch
     assert supabase_sync._remote_bill_ids(object(), rows) == {
         "local-bill-id": "local-bill-id"
     }
+
+
+def test_remote_rows_by_in_orders_by_filter_column_not_id(monkeypatch) -> None:
+    # Regression: ordering child lookups by id.asc let Postgres walk the id PK
+    # index filtering `bill_id in (...)` row-by-row, which grew into a 57014
+    # statement timeout on bill_actions. The query must lead its order with the
+    # filter column so the planner uses the index that already covers it,
+    # falling back to id only as a stable-pagination tiebreak.
+    seen: list[dict] = []
+
+    class _FakeResp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return []  # empty page short-circuits pagination
+
+    class _FakeClient:
+        def get(self, path, params, headers):
+            seen.append(params)
+            return _FakeResp()
+
+    supabase_sync._remote_rows_by_in(
+        _FakeClient(),
+        "bill_actions",
+        select="id,bill_id,fingerprint",
+        column="bill_id",
+        values=["b1", "b2", "b3"],
+    )
+
+    assert seen, "expected at least one query"
+    assert seen[0]["order"] == "bill_id.asc,id.asc"
