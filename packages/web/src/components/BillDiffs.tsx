@@ -135,13 +135,20 @@ export function BillDiffs({ billId }: { billId: string }) {
 }
 
 function OrphanVariantsSection({ variants }: { variants: RuleVariant[] }) {
+  // Only variants with an actual drafted patch earn a full panel. The
+  // rest are file-level echoes of prefix matching (amending §2015 also
+  // matches every statutes/7/2015/... child file) — one compact list,
+  // not a wall of identical boxes.
+  const patched = variants.filter((v) => v.patched_yaml);
+  const fileLevel = variants.filter((v) => !v.patched_yaml);
+
   return (
     <section className="diffs">
       <h3>Encoded rule variants</h3>
       <p className="hint">
         Rule files this bill's amendments touch in <code>rulespec-us</code>.
       </p>
-      {variants.map((v) => (
+      {patched.map((v) => (
         <div className="diff-section" key={v.id}>
           <aside className="diff-rail">
             <div className="rulespec-panel rulespec-panel--encoded">
@@ -163,6 +170,30 @@ function OrphanVariantsSection({ variants }: { variants: RuleVariant[] }) {
           </aside>
         </div>
       ))}
+      {fileLevel.length > 0 && (
+        <details className="orphan-variants">
+          <summary>
+            {fileLevel.length} more encoded file{fileLevel.length === 1 ? "" : "s"} matched
+            at the file level (no rule-level patch drafted yet)
+          </summary>
+          <ul className="orphan-variants-list">
+            {fileLevel.map((v) => (
+              <li key={v.id}>
+                {v.encoding ? (
+                  <a href={v.encoding.github_url} target="_blank" rel="noreferrer">
+                    <code>{v.file_path}</code>
+                  </a>
+                ) : (
+                  <code>{v.file_path}</code>
+                )}
+                <span className={`rs-variant-tier rs-variant-tier--${v.tier}`}>
+                  {v.tier}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </section>
   );
 }
@@ -341,9 +372,9 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
       </div>
       {noRuleGroundsHere && !showFull && (
         <p className="rs-variant-slice rs-variant-slice--fallback">
-          No rule in this file grounds in <code>{sectionCitation}</code> — the
-          file is encoded against §{(baselineSliced?.total ?? 0)} other
-          subsections of this statute. The bill's variant exists at the
+          No rule in this file grounds in <code>{sectionCitation}</code> — its
+          {" "}{baselineSliced?.total ?? 0} rule{(baselineSliced?.total ?? 0) === 1 ? "" : "s"} cover
+          other subsections of this statute. The bill's variant exists at the
           file level only.{" "}
           <button className="rs-variant-slice-toggle"
                   onClick={() => setShowFull(true)}>
