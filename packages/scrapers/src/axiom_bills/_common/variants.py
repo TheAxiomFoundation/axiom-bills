@@ -24,6 +24,7 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
+from .citation_scope import op_affects_encoding
 from .db import DEFAULT_DB
 from .reencoder import Atom, Op, Tier, reencode_rule_file
 
@@ -135,11 +136,19 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
             continue
         target_citation = section["citation"]
         for enc in _encodings_for_section(conn, target_citation):
-            encoding_by_id[enc["id"]] = enc
             for raw_op in section["applied_ops"]:
+                op_kind = raw_op["kind"]
+                op_target = raw_op.get("target") or target_citation
+                # Prefix matching finds every *related* file; only feed
+                # the reencoder ops that can actually *affect* this one
+                # (an add-end against §2015 can't change what
+                # statutes/7/2015/d/2/B.yaml encodes).
+                if not op_affects_encoding(enc["citation"], op_target, op_kind):
+                    continue
+                encoding_by_id[enc["id"]] = enc
                 ops_by_encoding_id.setdefault(enc["id"], []).append(Op(
-                    kind=raw_op["kind"],
-                    target=raw_op.get("target", target_citation),
+                    kind=op_kind,
+                    target=op_target,
                     needle=raw_op.get("needle", ""),
                     payload=raw_op.get("payload", ""),
                 ))

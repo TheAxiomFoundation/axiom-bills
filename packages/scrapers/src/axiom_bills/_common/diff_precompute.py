@@ -18,6 +18,7 @@ import sqlite3
 import sys
 from typing import Any
 
+from .citation_scope import is_ancestor, op_affects_encoding
 from .corpus_client import fetch as fetch_corpus
 from .amendments import (
     normalize_legal_text,
@@ -45,8 +46,18 @@ def _op_dict(op) -> dict:
     }
 
 
-def _encoding_for(conn: sqlite3.Connection, citation: str) -> dict | None:
-    row = conn.execute(
+def _encoding_for(conn: sqlite3.Connection, citation: str,
+                  ops: list | None = None) -> dict | None:
+    """Pick the encoded file that represents this section, if any.
+
+    Candidates are found by bidirectional prefix match; the pick is
+    op-aware: a file is only eligible if at least one of the section's
+    ops can affect it (an add-end against §2015 can't touch a nested
+    statutes/7/2015/d/2/B.yaml). Preference order: exact citation, then
+    nearest ancestor (the file that *contains* the target), then the
+    deepest affected descendant.
+    """
+    rows = conn.execute(
         """
         SELECT jurisdiction, repo, kind, citation, file_path
         FROM axiom_encodings
@@ -55,20 +66,48 @@ def _encoding_for(conn: sqlite3.Connection, citation: str) -> dict | None:
            OR ? LIKE citation || '.%'
            OR citation LIKE ? || '(%'
            OR citation LIKE ? || '.%'
-        ORDER BY length(citation) DESC
-        LIMIT 1
         """,
         (citation, citation, citation, citation, citation),
-    ).fetchone()
-    if not row:
+    ).fetchall()
+    if not rows:
         return None
-    return {
-        "repo": row["repo"],
-        "kind": row["kind"],
-        "citation": row["citation"],
-        "file_path": row["file_path"],
-        "github_url": f"https://github.com/TheAxiomFoundation/{row['repo']}/blob/main/{row['file_path']}",
-    }
+
+    op_list = [
+        (getattr(op, "target", "") or citation, getattr(op, "kind", ""))
+        for op in (ops or [])
+    ]
+
+    def eligible(row) -> bool:
+        if not op_list:
+            # No parsed ops: only exact/ancestor files may represent the
+            # section — a child file can't stand in for its parent.
+            return row["citation"] == citation or \
+                is_ancestor(row["citation"], citation)
+        return any(
+            op_affects_encoding(row["citation"], target, kind)
+            for target, kind in op_list
+        )
+
+    exact = [r for r in rows if r["citation"] == citation]
+    ancestors = sorted(
+        (r for r in rows if is_ancestor(r["citation"], citation)),
+        key=lambda r: -len(r["citation"]),
+    )
+    descendants = sorted(
+        (r for r in rows if is_ancestor(citation, r["citation"])),
+        key=lambda r: -len(r["citation"]),
+    )
+    for pool in (exact, ancestors, descendants):
+        for row in pool:
+            if eligible(row):
+                return {
+                    "repo": row["repo"],
+                    "kind": row["kind"],
+                    "citation": row["citation"],
+                    "file_path": row["file_path"],
+                    "github_url": f"https://github.com/TheAxiomFoundation/{row['repo']}/blob/main/{row['file_path']}",
+                }
+    return None
 
 
 def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
@@ -88,7 +127,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
 
     for block in blocks:
         target = block.target
-        encoding = _encoding_for(conn, target)
+        encoding = _encoding_for(conn, target, block.operations)
         prov = fetch_corpus(target, db_path=db_path)
         if prov is None or not prov.body:
             sections.append(_unmatched(target, encoding,

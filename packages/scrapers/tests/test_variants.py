@@ -206,6 +206,63 @@ def test_variant_removed_when_bill_stops_touching_file(conn):
     assert _variant(conn) is None
 
 
+def test_additive_op_creates_no_variants_for_descendant_files(conn):
+    """Regression (H.R.372): an add-end against the parent section used
+    to create a no-content variant for every nested encoded file."""
+    conn.execute(
+        """
+        INSERT INTO axiom_encodings (id, jurisdiction, repo, kind, citation, file_path)
+        VALUES ('e2', 'us', 'rulespec-us', 'statute', '26 USC 32(a)(1)',
+                'statutes/26/32/a/1.yaml')
+        """
+    )
+    conn.execute(
+        "UPDATE bills SET diffs=? WHERE id='b1'",
+        (json.dumps({
+            "source_text_sha256": "sha-add",
+            "sections": [{
+                "citation": "26 USC 32",
+                "applied_ops": [{
+                    "kind": "add-end",
+                    "target": "26 USC 32",
+                    "needle": "",
+                    "payload": "(9) New paragraph text.",
+                }],
+            }],
+        }),),
+    )
+    compute_for_bill(conn, "b1")
+    rows = conn.execute(
+        "SELECT file_path FROM rule_variants WHERE bill_id='b1'"
+    ).fetchall()
+    # Neither 32.yaml's descendants nor 32(a)(1) get a variant; the
+    # section itself has no exact/ancestor encoding here, so nothing at
+    # all is produced — new provisions go to the encoder backlog.
+    assert [r["file_path"] for r in rows] == []
+
+
+def test_modifying_op_still_reaches_descendant_files(conn):
+    conn.execute(
+        "UPDATE bills SET diffs=? WHERE id='b1'",
+        (json.dumps({
+            "source_text_sha256": "sha-mod",
+            "sections": [{
+                "citation": "26 USC 32",
+                "applied_ops": [{
+                    "kind": "strike-insert",
+                    "target": "26 USC 32",
+                    "needle": "$600",
+                    "payload": "$750",
+                }],
+            }],
+        }),),
+    )
+    counts = compute_for_bill(conn, "b1")
+    assert counts["variants"] == 1
+    v = _variant(conn)
+    assert v["file_path"] == "statutes/26/32.yaml"
+
+
 def test_missing_baseline_records_no_op(conn, monkeypatch, tmp_path):
     monkeypatch.setenv("RULESPEC_US_ROOT", str(tmp_path / "nowhere"))
     counts = compute_for_bill(conn, "b1")

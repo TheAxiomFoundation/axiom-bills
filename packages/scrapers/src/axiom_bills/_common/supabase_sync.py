@@ -602,19 +602,54 @@ def sync(db_path: str) -> dict[str, int]:
                             "source_text_sha256": r["source_text_sha256"],
                         } if has_fingerprint else {}),
                     })
-                child_id_map = _remote_child_ids(
+                # When this run recomputed diffs, the local variant set is
+                # authoritative for every synced bill — including bills
+                # whose diffs no longer touch any encoding. Fetch remote
+                # variants for all of them so stale rows get deleted, not
+                # just id-remapped.
+                variant_bill_ids = {row["bill_id"] for row in rows}
+                if include_diffs:
+                    variant_bill_ids |= set(bill_id_map.values())
+                remote_variants = _remote_rows_by_in(
                     client,
                     "rule_variants",
-                    rows=rows,
-                    select="file_path",
-                    key_columns=("file_path",),
+                    select="id,bill_id,file_path",
+                    column="bill_id",
+                    values=variant_bill_ids,
                 )
+                remote_by_key = {
+                    (r["bill_id"], r["file_path"]): r["id"]
+                    for r in remote_variants
+                }
                 for row in rows:
-                    row["id"] = child_id_map[row["id"]]
+                    row["id"] = remote_by_key.get(
+                        (row["bill_id"], row["file_path"]), row["id"])
                 counts["rule_variants"] = _upsert(
                     client, "rule_variants", rows,
                     on_conflict="bill_id,file_path", chunk=200,
                 )
+                if include_diffs:
+                    local_keys = {
+                        (row["bill_id"], row["file_path"]) for row in rows
+                    }
+                    stale_variant_ids = sorted(
+                        r["id"] for r in remote_variants
+                        if (r["bill_id"], r["file_path"]) not in local_keys
+                    )
+                    for batch in _chunks(stale_variant_ids, 100):
+                        resp = _send_with_retry(
+                            lambda: client.delete(
+                                "/rule_variants",
+                                params={"id": f"in.({','.join(batch)})"},
+                            ),
+                            what="delete stale rule_variants",
+                        )
+                        if resp.status_code >= 300:
+                            raise RuntimeError(
+                                f"Supabase delete from rule_variants failed "
+                                f"({resp.status_code}): {resp.text[:500]}"
+                            )
+                    counts["rule_variants_deleted"] = len(stale_variant_ids)
             except sqlite3.OperationalError as exc:
                 if "no such table" not in str(exc):
                     raise
