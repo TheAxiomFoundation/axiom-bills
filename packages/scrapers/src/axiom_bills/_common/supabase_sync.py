@@ -187,7 +187,12 @@ def _bool(v) -> bool:
     return bool(v) if v not in (None, "") else False
 
 
-def _remote_session_ids(client: httpx.Client, local_rows: list[sqlite3.Row]) -> dict[str, str]:
+def _remote_session_ids(
+    client: httpx.Client, local_rows: list[sqlite3.Row],
+) -> tuple[dict[str, str], set[str]]:
+    """Map local session ids to remote ones; also return the set of all
+    remote session ids so bill mapping can tell 're-keyed session' apart
+    from 'different session entirely'."""
     remote_rows = _remote_rows_by_in(
         client,
         "sessions",
@@ -199,27 +204,17 @@ def _remote_session_ids(client: httpx.Client, local_rows: list[sqlite3.Row]) -> 
         (r["jurisdiction"], r["name"]): r["id"]
         for r in remote_rows
     }
-    return {
+    mapping = {
         r["id"]: existing.get((r["jurisdiction"], r["name"]), r["id"])
         for r in local_rows
     }
+    return mapping, {r["id"] for r in remote_rows}
 
 
-def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
-    # Look up existing remote bills by JURISDICTION, not session_id.
-    # bills.session_id has no index, so a `session_id=in.(...)` lookup is a
-    # full-table sequential scan that timed out (57014) once the table grew.
-    # jurisdiction is indexed (idx_bills_jurisdiction_status), and a sync only
-    # ever covers a single jurisdiction, so this one query is both fast and
-    # sufficient — we derive the precise key match and the ambiguity-safe
-    # fallback from the same rows instead of issuing a second query.
-    remote_rows = _remote_rows_by_in(
-        client,
-        "bills",
-        select="id,jurisdiction,session_id,chamber,number",
-        column="jurisdiction",
-        values=(r["jurisdiction"] for r in rows),
-    )
+def _map_bill_ids(rows: list[dict], remote_rows: list[dict],
+                  known_remote_sessions: set[str]) -> dict[str, str]:
+    """Pure mapping logic (extracted for testability): local bill id →
+    remote bill id where the same bill already exists remotely."""
     existing = {
         (r["jurisdiction"], r["session_id"], r["chamber"], r["number"]): r["id"]
         for r in remote_rows
@@ -235,10 +230,17 @@ def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
     if not missing_rows:
         return mapped
 
-    # Fallback for bills whose remote session_id differs from the local one
-    # (session re-keying): match on (jurisdiction, chamber, number) when it's
+    # Fallback for bills whose remote session_id differs from the local
+    # one because the session was RE-KEYED (local session name unknown
+    # remotely): match on (jurisdiction, chamber, number) when
     # unambiguous, so an upsert can't rewrite a bill PK that child rows
     # already reference.
+    #
+    # Crucially NOT applied when the local row's session exists remotely:
+    # bill numbers repeat across Congresses (H.R.7024 exists in the 118th
+    # and the 119th as unrelated bills), and adopting the other
+    # Congress's PK for a natural key that won't match it produced a
+    # 23505 insert crash. A session-matched miss is a genuinely new bill.
     fallback: dict[tuple[Any, ...], str | None] = {}
     for r in remote_rows:
         key = (r["jurisdiction"], r["chamber"], r["number"])
@@ -248,10 +250,31 @@ def _remote_bill_ids(client: httpx.Client, rows: list[dict]) -> dict[str, str]:
             fallback[key] = r["id"]
 
     for r in missing_rows:
+        if r["session_id"] in known_remote_sessions:
+            continue  # known session, no exact match → new bill
         key = (r["jurisdiction"], r["chamber"], r["number"])
         if fallback.get(key):
             mapped[r["id"]] = fallback[key]
     return mapped
+
+
+def _remote_bill_ids(client: httpx.Client, rows: list[dict],
+                     known_remote_sessions: set[str] | None = None) -> dict[str, str]:
+    # Look up existing remote bills by JURISDICTION, not session_id.
+    # bills.session_id has no index, so a `session_id=in.(...)` lookup is a
+    # full-table sequential scan that timed out (57014) once the table grew.
+    # jurisdiction is indexed (idx_bills_jurisdiction_status), and a sync only
+    # ever covers a single jurisdiction, so this one query is both fast and
+    # sufficient — we derive the precise key match and the ambiguity-safe
+    # fallback from the same rows instead of issuing a second query.
+    remote_rows = _remote_rows_by_in(
+        client,
+        "bills",
+        select="id,jurisdiction,session_id,chamber,number",
+        column="jurisdiction",
+        values=(r["jurisdiction"] for r in rows),
+    )
+    return _map_bill_ids(rows, remote_rows, known_remote_sessions or set())
 
 
 def _remote_child_ids(
@@ -298,7 +321,7 @@ def sync(db_path: str) -> dict[str, int]:
         session_rows = local.execute(
             "SELECT id, jurisdiction, name, start_date, end_date, is_current FROM sessions"
         ).fetchall()
-        session_id_map = _remote_session_ids(client, session_rows)
+        session_id_map, known_remote_sessions = _remote_session_ids(client, session_rows)
         rows = []
         for r in session_rows:
             rows.append({
@@ -368,7 +391,7 @@ def sync(db_path: str) -> dict[str, int]:
                     "needs_new_encoding": _bool(r["needs_new_encoding"]),
                 } if include_backlog else {}),
             })
-        bill_id_map = _remote_bill_ids(client, bills_rows)
+        bill_id_map = _remote_bill_ids(client, bills_rows, known_remote_sessions)
         for row in bills_rows:
             row["id"] = bill_id_map[row["id"]]
         # Small chunk: each bill row carries the diffs JSONB, so big batches
@@ -703,7 +726,7 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
         session_rows = local.execute(
             "SELECT id, jurisdiction, name FROM sessions"
         ).fetchall()
-        session_id_map = _remote_session_ids(client, session_rows)
+        session_id_map, known_remote_sessions = _remote_session_ids(client, session_rows)
         bill_lookup_rows = list({
             row["bill_id"]: {
                 "id": row["bill_id"],
@@ -714,7 +737,7 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             }
             for row in pending
         }.values())
-        bill_id_map = _remote_bill_ids(client, bill_lookup_rows)
+        bill_id_map = _remote_bill_ids(client, bill_lookup_rows, known_remote_sessions)
 
         remote_rows = _remote_rows_by_in(
             client,
