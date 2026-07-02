@@ -20,6 +20,7 @@ from typing import Any
 
 from .citation_scope import is_ancestor, op_affects_encoding
 from .corpus_client import fetch as fetch_corpus
+from .effective_date import extract_effective_date
 from .version_rank import stage_rank
 from .amendments import (
     normalize_legal_text,
@@ -111,6 +112,27 @@ def _encoding_for(conn: sqlite3.Connection, citation: str,
     return None
 
 
+def _related_encodings_exist(conn: sqlite3.Connection, citation: str) -> bool:
+    """Any encoded file related to this citation by nesting?
+
+    Used when a section gets NO affected encoding: if related files
+    exist, the bill is adding provisions inside an encoded program area
+    — an encoder-backlog signal, distinct from 'unencoded territory'.
+    """
+    return conn.execute(
+        """
+        SELECT 1 FROM axiom_encodings
+        WHERE citation = ?
+           OR ? LIKE citation || '(%'
+           OR ? LIKE citation || '.%'
+           OR citation LIKE ? || '(%'
+           OR citation LIKE ? || '.%'
+        LIMIT 1
+        """,
+        (citation, citation, citation, citation, citation),
+    ).fetchone() is not None
+
+
 def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                      db_path: str = DEFAULT_DB) -> dict:
     """Compute the same JSON shape the API returned for /bills/{id}/diffs."""
@@ -137,9 +159,15 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     for block in blocks:
         target = block.target
         encoding = _encoding_for(conn, target, block.operations)
+        encoding_backlog = (
+            encoding is None
+            and bool(block.operations)
+            and _related_encodings_exist(conn, target)
+        )
         prov = fetch_corpus(target, db_path=db_path)
         if prov is None or not prov.body:
             sections.append(_unmatched(target, encoding,
+                                       encoding_backlog=encoding_backlog,
                                        parse_warnings=block.parse_warnings,
                                        operations=block.operations))
             continue
@@ -155,6 +183,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                     after = applied_result.after_text or slice_text
                     sections.append(_section_payload(
                         target, encoding, prov,
+                        encoding_backlog=encoding_backlog,
                         before=slice_text, after=after,
                         applied=applied_result.applied,
                         unapplied=applied_result.unapplied,
@@ -165,6 +194,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                     continue
                 sections.append(_section_payload(
                     target, encoding, prov,
+                    encoding_backlog=encoding_backlog,
                     before=slice_text, after=slice_text,
                     applied=[], unapplied=applied_result.unapplied,
                     block_warnings=block.parse_warnings,
@@ -187,6 +217,7 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
         after = applied_result.after_text or prov.body
         sections.append(_section_payload(
             target, encoding, prov,
+            encoding_backlog=encoding_backlog,
             before=prov.body, after=after,
             applied=applied_result.applied,
             unapplied=applied_result.unapplied,
@@ -203,14 +234,22 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     # 152). The strict policy: only emit sections where the parser
     # actually targeted the citation with an amendment block.
 
-    return {"sections": sections, "source_text_sha256": text_sha}
+    statutory_date = extract_effective_date(bill_text)
+    return {
+        "sections": sections,
+        "source_text_sha256": text_sha,
+        "statutory_effective_from": (
+            statutory_date.isoformat() if statutory_date else None
+        ),
+    }
 
 
 def _section_payload(target: str, encoding: dict | None, prov, *,
                      before: str, after: str,
                      applied: list, unapplied: list,
                      block_warnings: list, block_raw: str,
-                     sliced: bool, exact_match: bool = False) -> dict:
+                     sliced: bool, exact_match: bool = False,
+                     encoding_backlog: bool = False) -> dict:
     before_norm = normalize_legal_text(before)
     after_norm = normalize_legal_text(after)
     diff = unified_diff(before_norm, after_norm) if applied else []
@@ -233,6 +272,7 @@ def _section_payload(target: str, encoding: dict | None, prov, *,
         "block_raw": block_raw[:1200] if block_warnings else None,
         "has_rulespec": bool(encoding),
         "encoding": encoding,
+        "encoding_backlog": encoding_backlog,
         "axiom_url": f"{AXIOM_APP_URL}/{prov.citation_path}",
         "source_url": prov.source_url,
     }
@@ -240,7 +280,8 @@ def _section_payload(target: str, encoding: dict | None, prov, *,
 
 def _unmatched(citation: str, encoding: dict | None, *,
                parse_warnings: list | None = None,
-               operations: list | None = None) -> dict:
+               operations: list | None = None,
+               encoding_backlog: bool = False) -> dict:
     return {
         "citation": citation,
         "in_corpus": False,
@@ -258,6 +299,7 @@ def _unmatched(citation: str, encoding: dict | None, *,
         "block_raw": None,
         "has_rulespec": bool(encoding),
         "encoding": encoding,
+        "encoding_backlog": encoding_backlog,
         "axiom_url": None,
         "source_url": None,
     }
@@ -279,6 +321,9 @@ def precompute_all(db_path: str = DEFAULT_DB,
             "ALTER TABLE bills ADD COLUMN touches_corpus INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             "ALTER TABLE bills ADD COLUMN touches_rulespec INTEGER NOT NULL DEFAULT 0")
+    if "needs_new_encoding" not in cols:
+        conn.execute(
+            "ALTER TABLE bills ADD COLUMN needs_new_encoding INTEGER NOT NULL DEFAULT 0")
 
     n_encodings = conn.execute(
         "SELECT count(*) AS n FROM axiom_encodings"
@@ -326,11 +371,16 @@ def precompute_all(db_path: str = DEFAULT_DB,
             and (s["applied_ops"] or s["unapplied_ops"])
             for s in payload["sections"]
         )
+        # Amends inside an encoded program area but no existing rule file
+        # is affected → new provision → encoder backlog.
+        needs_new_encoding = any(
+            s.get("encoding_backlog") for s in payload["sections"]
+        )
         conn.execute(
             "UPDATE bills SET diffs = ?, touches_corpus = ?,"
-            " touches_rulespec = ? WHERE id = ?",
+            " touches_rulespec = ?, needs_new_encoding = ? WHERE id = ?",
             (json.dumps(payload), int(touches_corpus),
-             int(touches_rulespec), bill_id),
+             int(touches_rulespec), int(needs_new_encoding), bill_id),
         )
     conn.close()
     return counts

@@ -12,6 +12,7 @@ dependencies = [
   "tenacity>=8.3",
   "pyyaml>=6.0",
   "anthropic>=0.104.1",
+  "pypdf>=6.14.2",
 ]
 
 [project.optional-dependencies]

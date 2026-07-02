@@ -33,7 +33,8 @@ export const ALL_KINDS: BillKind[] = [
   "appropriations", "procedural", "vehicle", "unknown",
 ];
 
-export type Relevance = "any" | "touches_corpus" | "touches_rulespec";
+export type Relevance =
+  | "any" | "touches_corpus" | "touches_rulespec" | "needs_new_encoding";
 
 export type NormalizedStatus =
   | "introduced" | "in_committee" | "passed_chamber" | "passed_both"
@@ -154,6 +155,9 @@ export type BillDiffSection = {
     file_path: string;
     github_url: string;
   } | null;
+  // Ops target an encoded program area but affect no existing rule file
+  // — the new provision belongs to the encoder backlog.
+  encoding_backlog?: boolean;
   axiom_url: string | null;
   source_url: string | null;
 };
@@ -357,6 +361,7 @@ async function bills(
   // the matching bills' last actions fell outside the newest 500.
   if (opts.relevance === "touches_corpus") q = q.eq("touches_corpus", true);
   if (opts.relevance === "touches_rulespec") q = q.eq("touches_rulespec", true);
+  if (opts.relevance === "needs_new_encoding") q = q.eq("needs_new_encoding", true);
   q = q.order("current_status_at", { ascending: false, nullsFirst: false });
   // Stable secondary key so pagination windows don't overlap when many
   // bills share the same current_status_at.
