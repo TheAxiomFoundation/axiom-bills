@@ -85,7 +85,12 @@ def _parse_action_datetime(action: dict) -> datetime:
 class FederalScraper(BillScraper):
     jurisdiction = "us"
     source_name = "Congress.gov"
-    min_interval_per_host = 0.2  # 5000/hour budget — we can go fast
+    # Congress.gov allows 5,000 requests/hour. 0.2s (18,000/hr) blew
+    # through that in ~17 minutes on a full refresh, after which the API
+    # stalls connections until the window resets — the run bled out on
+    # ReadTimeouts. 0.75s ≈ 4,800/hr stays inside the budget for runs of
+    # any length.
+    min_interval_per_host = 0.75
 
     def __init__(self, *, congress: int | None = None, limit: int | None = None,
                  bill_ids: list[str] | None = None,
