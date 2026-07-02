@@ -21,6 +21,10 @@ on:
         required: false
         default: "true"
         type: string
+      bills:
+        description: "Optional comma-separated bill ids (e.g. hr/372,s/268) to scrape instead of the recent-updates listing. For targeted backfills."
+        required: false
+        type: string
   schedule:
     - cron: "7 * * * *"
 
@@ -32,9 +36,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     # Cap runtime so a wedged run can't hold the (cancel-in-progress: false)
-    # queue for hours. Incremental hourly refreshes finish in minutes; a rare
-    # manual full_refresh that needs longer can be re-run or bumped.
-    timeout-minutes: 60
+    # queue for hours. Incremental hourly refreshes finish in minutes; a
+    # manual full_refresh scrapes the whole Congress and gets 5 hours.
+    timeout-minutes: ${{ inputs.full_refresh == 'true' && 300 || 60 }}
     env:
       CONGRESS_API_KEY: ${{ secrets.CONGRESS_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -42,6 +46,7 @@ jobs:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       REQUESTED_SINCE: ${{ inputs.since || '' }}
       REQUESTED_LIMIT: ${{ inputs.limit || '' }}
+      REQUESTED_BILLS: ${{ inputs.bills || '' }}
       FULL_REFRESH: ${{ inputs.full_refresh || 'false' }}
       FETCH_TEXTS: ${{ inputs.fetch_texts || 'true' }}
       RULESPEC_US_ROOT: ${{ github.workspace }}/rulespec-us
@@ -134,7 +139,13 @@ jobs:
           set -euo pipefail
 
           scrape_args=(--jurisdiction us)
-          if [[ -n "${{ steps.cursor.outputs.since }}" ]]; then
+          if [[ -n "$REQUESTED_BILLS" ]]; then
+            # Targeted backfill: scrape exactly these bills, no cursor.
+            IFS=',' read -ra _bills <<< "$REQUESTED_BILLS"
+            for b in "${_bills[@]}"; do
+              scrape_args+=(--bill "$b")
+            done
+          elif [[ -n "${{ steps.cursor.outputs.since }}" ]]; then
             scrape_args+=(--since "${{ steps.cursor.outputs.since }}")
           fi
           if [[ -n "$REQUESTED_LIMIT" ]]; then
