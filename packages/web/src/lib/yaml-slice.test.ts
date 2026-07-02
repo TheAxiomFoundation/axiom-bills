@@ -263,8 +263,10 @@ describe("citation format drift (U.S.C. vs USC)", () => {
   });
 
   it("matches the deeper citation direction too", () => {
+    // Both rules cover a (b)(5)(A) query: one grounds inside it, the
+    // other grounds the containing (b)(5).
     const out = sliceRulesBySource(PELL, "20 USC 1070a(b)(5)(A)");
     expect(out.fallback).toBe(false);
-    expect(out.shown).toBe(1);
+    expect(out.shown).toBe(2);
   });
 });
