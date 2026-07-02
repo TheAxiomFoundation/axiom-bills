@@ -10,8 +10,18 @@ from __future__ import annotations
 
 from axiom_bills._common.citation_scope import (
     is_ancestor,
+    normalize_citation,
     op_affects_encoding,
 )
+
+
+def test_normalize_citation_collapses_format_drift():
+    """Rule sources drift ('20 U.S.C. 1070a', '26 U. S. C. § 32');
+    unnormalized prefix comparisons silently fail across the forms."""
+    assert normalize_citation("20 U.S.C. 1070a(b)(5)") == "20 USC 1070a(b)(5)"
+    assert normalize_citation("7 C.F.R. 273.3") == "7 CFR 273.3"
+    assert normalize_citation("26 U.S.C. § 32(a)") == "26 USC 32(a)"
+    assert normalize_citation("26 USC 32") == "26 USC 32"
 
 
 def test_is_ancestor():

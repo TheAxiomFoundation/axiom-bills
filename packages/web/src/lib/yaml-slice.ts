@@ -65,13 +65,28 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
   };
 }
 
+/** Collapse citation format drift: rulespec rule sources aren't uniform
+ * ('20 U.S.C. 1070a' vs '20 USC 1070a', stray '§'), and prefix
+ * comparison silently fails across the dotted form — which rendered
+ * "no rule in this file grounds in 20 USC 1070a" for a file whose three
+ * rules all ground in 1070a(b)(5). */
+export function normCitation(c: string): string {
+  return c
+    .replace(/\bU\.\s*S\.\s*C\./g, "USC")
+    .replace(/\bC\.\s*F\.\s*R\./g, "CFR")
+    .replace(/§/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Does this rule block's `source:` line overlap with the target citation?
  * Accepts either 2-space (PyYAML dump) or 4-space (handwritten) indent. */
 function sourceOverlaps(block: string, citation: string): boolean {
   const m = block.match(/^ {2,4}source:\s*(.+)$/m);
   if (!m) return false;
-  const sources = normalizeSources(m[1]);
-  return sources.some((s) => s.startsWith(citation) || citation.startsWith(s));
+  const target = normCitation(citation);
+  const sources = normalizeSources(normCitation(m[1]));
+  return sources.some((s) => s.startsWith(target) || target.startsWith(s));
 }
 
 /** Expand the rulespec convention where comma-separated sources share a

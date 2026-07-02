@@ -37,7 +37,7 @@ from typing import Iterable
 
 import yaml
 
-from .citation_scope import is_ancestor
+from .citation_scope import is_ancestor, normalize_citation
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -129,6 +129,11 @@ def _op_reaches_rule(op_target: str, rule_source: str) -> bool:
     """
     if not op_target or not rule_source:
         return True
+    # Rule sources drift in format ('20 U.S.C. 1070a' vs '20 USC 1070a');
+    # normalize both sides or the scope check silently degrades to
+    # permissive for every dotted-format file.
+    op_target = normalize_citation(op_target)
+    rule_source = normalize_citation(rule_source)
     if _section_root(op_target) != _section_root(rule_source):
         return True
     return (
