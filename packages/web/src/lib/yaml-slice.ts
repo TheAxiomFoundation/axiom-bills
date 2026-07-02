@@ -74,6 +74,9 @@ export function normCitation(c: string): string {
   return c
     .replace(/\bU\.\s*S\.\s*C\./g, "USC")
     .replace(/\bC\.\s*F\.\s*R\./g, "CFR")
+    // 'IRC section 63(c)(5)' — the IRC is codified verbatim as Title 26.
+    // Keep in sync with citation_scope.normalize_citation (Python).
+    .replace(/\bIRC\s+(?:section\s+|§\s*)?(?=\d)/g, "26 USC ")
     .replace(/§/g, " ")
     .replace(/\s+/g, " ")
     .trim();

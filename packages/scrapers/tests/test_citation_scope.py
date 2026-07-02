@@ -22,6 +22,11 @@ def test_normalize_citation_collapses_format_drift():
     assert normalize_citation("7 C.F.R. 273.3") == "7 CFR 273.3"
     assert normalize_citation("26 U.S.C. § 32(a)") == "26 USC 32(a)"
     assert normalize_citation("26 USC 32") == "26 USC 32"
+    assert normalize_citation("IRC section 63(c)(5)") == "26 USC 63(c)(5)"
+    assert normalize_citation("IRC § 24(h)") == "26 USC 24(h)"
+    # Non-mappable forms pass through (counted by the index warning).
+    assert normalize_citation("paragraph (1)") == "paragraph (1)"
+    assert normalize_citation("91 FR 33348") == "91 FR 33348"
 
 
 def test_is_ancestor():
@@ -57,6 +62,17 @@ def test_modifying_ops_do_affect_descendants():
     assert op_affects_encoding("7 USC 2015(d)(2)", "7 USC 2015(d)", "amend-to-read")
     assert op_affects_encoding("7 USC 2015(d)(2)", "7 USC 2015", "strike-insert")
     assert op_affects_encoding("7 USC 2015(d)(2)", "7 USC 2015(d)", "repeal")
+
+
+def test_scope_check_survives_format_drift():
+    """The choke point normalizes its own inputs — drift in either
+    argument must not silently fail the comparison."""
+    assert op_affects_encoding("20 U.S.C. 1070a(b)(5)", "20 USC 1070a",
+                               "strike-insert")
+    assert op_affects_encoding("20 USC 1070a(b)(5)", "20 U.S.C. § 1070a",
+                               "strike-insert")
+    assert not op_affects_encoding("20 U.S.C. 1070a(b)(5)", "20 USC 1070a",
+                                   "add-end")
 
 
 def test_unrelated_citations_never_affected():

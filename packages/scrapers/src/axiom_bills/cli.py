@@ -910,6 +910,16 @@ def index_encodings(repo: str, jurisdiction: str, repo_name: str | None) -> None
         f"Indexed {name}: scanned={counts['scanned']} "
         f"indexed={counts['indexed']} skipped={counts['skipped']}"
     )
+    if counts.get("nonconforming_sources"):
+        # Loud, not fatal: these rule sources don't normalize to any
+        # recognized citation form, so scope checks and the UI slicer
+        # can't reason about them. New drift shows up here first.
+        click.echo(
+            f"WARNING: {counts['nonconforming_sources']} rule source(s) "
+            "don't match any recognized citation format after "
+            "normalization — file format drift in the rulespec repo?",
+            err=True,
+        )
     if counts["scanned"] and not counts["indexed"]:
         # Every YAML skipped means the path convention didn't match —
         # e.g. the repo reorganized (statutes/ moved under us/). Fail

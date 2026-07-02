@@ -19,13 +19,25 @@ axiom-architecture's docs/corpus-encoding-mapping.md.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from pathlib import Path
 
 import yaml
 
+from .citation_scope import normalize_citation
 from .db import connect, DEFAULT_DB
+
+
+# After normalization, a federal rule source should look like one of
+# these. Anything else is format drift worth surfacing at index time —
+# unrecognized forms silently fail every downstream prefix comparison.
+_CONFORMING_SOURCE_RE = re.compile(
+    r"^\d+\s+(?:USC|CFR)\s+\S+"        # 26 USC 32(a) / 7 CFR 273.3
+    r"|^policy:"                        # policy:usda/snap/...
+    r"|^Pub\.?\s*L\.?"                  # Pub. L. 117-2 session laws
+)
 
 
 def _statute_citation(parts: tuple[str, ...]) -> str | None:
@@ -95,7 +107,8 @@ def parse_citation_from_path(repo_relative: Path) -> tuple[str, str] | None:
 
 
 def _index_rules(conn, encoding_id: str, yaml_doc: dict,
-                 default_corpus_path: str | None) -> tuple[int, int]:
+                 default_corpus_path: str | None,
+                 file_kind: str = "statute") -> tuple[int, int, int]:
     """Parse rules + proof atoms out of a YAML doc into encoded_rules.
 
     The module-level `source_verification.corpus_citation_path` is
@@ -105,13 +118,24 @@ def _index_rules(conn, encoding_id: str, yaml_doc: dict,
     """
     rules_written = 0
     atoms_written = 0
+    nonconforming = 0
     rules = yaml_doc.get("rules") or []
     if not isinstance(rules, list):
-        return 0, 0
+        return 0, 0, 0
     for rule in rules:
         if not isinstance(rule, dict):
             continue
         rule_id = uuid.uuid4().hex
+        # Canonicalize at the ingestion boundary: rulespec files drift
+        # ('20 U.S.C. 1070a' vs '20 USC 1070a'), and a raw source in the
+        # DB silently fails every downstream prefix comparison.
+        raw_source = rule.get("source") or ""
+        source = normalize_citation(raw_source)
+        # Only statute/regulation files must cite statutorily — policy
+        # files legitimately cite agency documents (Rev. Proc., guides).
+        if source and file_kind in ("statute", "regulation") \
+                and not _CONFORMING_SOURCE_RE.match(source):
+            nonconforming += 1
         conn.execute(
             """
             INSERT INTO encoded_rules
@@ -124,7 +148,7 @@ def _index_rules(conn, encoding_id: str, yaml_doc: dict,
                 encoding_id,
                 rule.get("name") or "",
                 rule.get("kind"),
-                rule.get("source") or "",
+                source,
                 rule.get("dtype"),
                 default_corpus_path,
             ),
@@ -163,7 +187,7 @@ def _index_rules(conn, encoding_id: str, yaml_doc: dict,
                 ),
             )
             atoms_written += 1
-    return rules_written, atoms_written
+    return rules_written, atoms_written, nonconforming
 
 
 def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
@@ -171,7 +195,7 @@ def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
     """Walk a rulespec-* clone and upsert its YAML inventory + rules."""
     counts = {
         "scanned": 0, "indexed": 0, "skipped": 0,
-        "rules": 0, "atoms": 0,
+        "rules": 0, "atoms": 0, "nonconforming_sources": 0,
     }
     with connect(db_path) as conn:
         # Keep encoding ids stable across re-index runs: rule_variants
@@ -238,9 +262,11 @@ def index_repo(repo_path: Path, jurisdiction: str, repo_name: str,
                 ((module.get("source_verification") or {})
                  .get("corpus_citation_path"))
             )
-            r, a = _index_rules(conn, encoding_id, doc, corpus_path)
+            r, a, nc = _index_rules(conn, encoding_id, doc, corpus_path,
+                                    file_kind=kind)
             counts["rules"] += r
             counts["atoms"] += a
+            counts["nonconforming_sources"] += nc
 
         # Drop encodings whose YAML no longer exists in the repo (renames,
         # deletions). Their encoded_rules/atoms/rule_variants cascade —
