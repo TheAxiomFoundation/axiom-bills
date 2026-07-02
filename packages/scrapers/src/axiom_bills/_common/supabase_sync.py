@@ -328,10 +328,14 @@ def sync(db_path: str) -> dict[str, int]:
         # a run that didn't recompute diffs has nothing true to say.
         include_flags = include_diffs and _has_column(
             local, "bills", "touches_rulespec")
+        include_backlog = include_flags and _has_column(
+            local, "bills", "needs_new_encoding")
         bills_rows: list[dict] = []
         diffs_expr = "diffs" if include_diffs else "NULL AS diffs"
         flags_expr = (", touches_corpus, touches_rulespec"
                       if include_flags else "")
+        if include_backlog:
+            flags_expr += ", needs_new_encoding"
         for r in local.execute(f"""
             SELECT id, jurisdiction, session_id, chamber, number, title, summary,
                    subjects, sponsors, source_url, current_status, current_status_at,
@@ -360,6 +364,9 @@ def sync(db_path: str) -> dict[str, int]:
                     "touches_corpus": _bool(r["touches_corpus"]),
                     "touches_rulespec": _bool(r["touches_rulespec"]),
                 } if include_flags else {}),
+                **({
+                    "needs_new_encoding": _bool(r["needs_new_encoding"]),
+                } if include_backlog else {}),
             })
         bill_id_map = _remote_bill_ids(client, bills_rows)
         for row in bills_rows:

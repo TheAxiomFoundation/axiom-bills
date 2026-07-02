@@ -88,13 +88,23 @@ def _encodings_for_section(conn: sqlite3.Connection, citation: str) -> list[sqli
     ).fetchall()
 
 
-def _effective_from_for_bill(row: sqlite3.Row) -> date:
+def _effective_from_for_bill(row: sqlite3.Row,
+                             payload: dict | None = None) -> date:
     """Pick the effective date the variant should claim.
 
-    If the bill has a `current_status_at` we use that — it's the most
-    recent status change. Otherwise fall back to today; rulespec just
-    needs *some* date and this is a proposed variant, not law yet.
+    Best: the statutory effective date extracted from the bill text
+    ("shall apply to taxable years beginning after..."), stored in the
+    diffs payload by precompute-diffs. Fallback: the bill's most recent
+    status change; then today. Rulespec just needs *some* date and this
+    is a proposed variant, not law yet — but when the bill states its
+    date, the patched version must carry it.
     """
+    statutory = (payload or {}).get("statutory_effective_from")
+    if statutory:
+        try:
+            return date.fromisoformat(statutory)
+        except ValueError:
+            pass
     raw = row["current_status_at"] if "current_status_at" in row.keys() else None
     if not raw:
         return date.today()
@@ -144,7 +154,7 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
         return counts
     payload = json.loads(diffs) if isinstance(diffs, str) else diffs
     text_sha = payload.get("source_text_sha256")
-    eff_from = _effective_from_for_bill(bill_row)
+    eff_from = _effective_from_for_bill(bill_row, payload)
 
     # Group all bill ops by their target encoded file. A single rule
     # YAML may encode multiple sections; we want every op against any of

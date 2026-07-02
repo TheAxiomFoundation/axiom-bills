@@ -47,8 +47,11 @@ function EmptyState({ code, counts, filtered, relevance, onClear }: {
       No bills match the current filters
       {relevance !== "any" && code !== "us" && (
         <> — note that Corpus/RuleSpec matching currently covers federal
-        bills only, so “{relevance === "touches_corpus" ? "Touches corpus" : "Touches RuleSpec"}”
-        is always empty for states</>
+        bills only, so “{
+          relevance === "touches_corpus" ? "Touches corpus"
+          : relevance === "needs_new_encoding" ? "Needs new encoding"
+          : "Touches RuleSpec"
+        }” is always empty for states</>
       )}
       .{" "}
       {filtered && (

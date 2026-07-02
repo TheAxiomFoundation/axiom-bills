@@ -289,13 +289,29 @@ function RuleSpecPanel({ section, variants }: {
     return (
       <div className="rulespec-panel rulespec-panel--missing">
         <p className="rulespec-eyebrow">RuleSpec encoding</p>
-        <p className="rulespec-missing">
-          Not encoded in <code>rulespec-us</code> yet.
-        </p>
-        <p className="rulespec-hint">
-          If this bill is enacted, this section will be added to the
-          encoder backlog rather than auto-re-encoded.
-        </p>
+        {section.encoding_backlog ? (
+          <>
+            <p className="rulespec-missing">
+              New provision in an encoded program area.
+            </p>
+            <p className="rulespec-hint">
+              Related rules of this statute are encoded in{" "}
+              <code>rulespec-us</code>, but this amendment adds text no
+              existing rule file covers — on enactment it goes to the
+              encoder backlog as a new encoding.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="rulespec-missing">
+              Not encoded in <code>rulespec-us</code> yet.
+            </p>
+            <p className="rulespec-hint">
+              If this bill is enacted, this section will be added to the
+              encoder backlog rather than auto-re-encoded.
+            </p>
+          </>
+        )}
       </div>
     );
   }

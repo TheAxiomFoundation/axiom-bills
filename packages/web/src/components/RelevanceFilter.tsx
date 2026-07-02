@@ -1,9 +1,10 @@
 import type { Relevance } from "../lib/api";
 
 const OPTIONS: { value: Relevance; label: string }[] = [
-  { value: "any",              label: "All bills" },
-  { value: "touches_corpus",   label: "Touches Axiom corpus" },
-  { value: "touches_rulespec", label: "Touches a RuleSpec" },
+  { value: "any",                label: "All bills" },
+  { value: "touches_corpus",     label: "Touches Axiom corpus" },
+  { value: "touches_rulespec",   label: "Touches a RuleSpec" },
+  { value: "needs_new_encoding", label: "Needs new encoding" },
 ];
 
 type Props = {

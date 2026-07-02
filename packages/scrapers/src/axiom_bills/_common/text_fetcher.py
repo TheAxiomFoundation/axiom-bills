@@ -3,10 +3,10 @@
 Format handling:
   * html / xml → strip tags via selectolax, retain text
   * txt        → keep verbatim
-  * pdf        → skipped for the prototype (need a separate dep); the
-                 row is left unfetched and a note is recorded. Most
-                 federal bills publish HTML and XML versions, so this
-                 misses very few cases at the federal level.
+  * pdf        → extracted via pypdf. Layout-derived text is noisier
+                 than HTML, but for PDF-only sources (several states,
+                 the occasional federal version) noisy text beats no
+                 text: citations and amendment headers still parse.
 
 We keep one row per (bill, version_label). Re-fetching updates the row
 in place when the SHA changes.
@@ -14,6 +14,7 @@ in place when the SHA changes.
 from __future__ import annotations
 
 import hashlib
+import io
 import uuid
 
 from selectolax.parser import HTMLParser
@@ -35,7 +36,15 @@ def _to_text(format_: str, body: bytes) -> str | None:
     if fmt == "txt":
         return body.decode("utf-8", errors="replace")
     if fmt == "pdf":
-        return None  # See module docstring.
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(body))
+            pages = [page.extract_text() or "" for page in reader.pages]
+        except Exception:
+            # Encrypted/corrupt/scanned-image PDFs — nothing to extract.
+            return None
+        text = "\n".join(pages).strip()
+        return text or None
     return None
 
 
@@ -43,7 +52,7 @@ def fetch_for_jurisdiction(
     jurisdiction: str,
     *,
     limit: int | None = None,
-    prefer_format: tuple[str, ...] = ("html", "xml", "txt"),
+    prefer_format: tuple[str, ...] = ("html", "xml", "txt", "pdf"),
     db_path: str = DEFAULT_DB,
 ) -> dict[str, int]:
     counts = {"bills_seen": 0, "versions_seen": 0, "fetched": 0, "skipped": 0}
