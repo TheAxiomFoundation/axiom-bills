@@ -20,8 +20,28 @@ The rule, per op:
 """
 from __future__ import annotations
 
+import re
+
 
 ADDITIVE_OP_KINDS = {"add-end", "insert-after", "insert-before"}
+
+_USC_DOTTED = re.compile(r"\bU\.\s*S\.\s*C\.")
+_CFR_DOTTED = re.compile(r"\bC\.\s*F\.\s*R\.")
+
+
+def normalize_citation(citation: str) -> str:
+    """Collapse citation format drift to the tracker's canonical form.
+
+    rulespec-us files aren't uniform: some rule sources say
+    '20 U.S.C. 1070a(b)(5)' where the tracker says '20 USC 1070a(b)(5)'.
+    Prefix comparisons silently fail across that drift.
+    """
+    if not citation:
+        return citation
+    out = _USC_DOTTED.sub("USC", citation)
+    out = _CFR_DOTTED.sub("CFR", out)
+    out = out.replace("§", " ").replace("§", " ")
+    return re.sub(r"\s+", " ", out).strip()
 
 
 def is_ancestor(ancestor: str, descendant: str) -> bool:

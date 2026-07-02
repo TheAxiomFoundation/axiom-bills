@@ -240,3 +240,33 @@ describe("sliceRulesBySource", () => {
     expect(out.filtered).not.toContain("rule_a_no_source");
   });
 });
+
+describe("citation format drift (U.S.C. vs USC)", () => {
+  // Regression: statutes/20/1070a/b/5.yaml writes sources as
+  // '20 U.S.C. 1070a(b)(5)'; the section citation is '20 USC 1070a'.
+  // The dotted form made every overlap fail, so the panel claimed
+  // "no rule in this file grounds in 20 USC 1070a".
+  const PELL = [
+    "format: rulespec/v1",
+    "rules:",
+    "  - name: pell_grant_statutory_add_on_amount",
+    "    source: 20 U.S.C. 1070a(b)(5)(A)(i)",
+    "  - name: total_maximum_federal_pell_grant",
+    "    source: 20 U.S.C. 1070a(b)(5)",
+    "",
+  ].join("\n");
+
+  it("matches dotted U.S.C. sources against the normalized citation", () => {
+    const out = sliceRulesBySource(PELL, "20 USC 1070a");
+    expect(out.fallback).toBe(false);
+    expect(out.shown).toBe(2);
+  });
+
+  it("matches the deeper citation direction too", () => {
+    // Both rules cover a (b)(5)(A) query: one grounds inside it, the
+    // other grounds the containing (b)(5).
+    const out = sliceRulesBySource(PELL, "20 USC 1070a(b)(5)(A)");
+    expect(out.fallback).toBe(false);
+    expect(out.shown).toBe(2);
+  });
+});
