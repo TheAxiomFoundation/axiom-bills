@@ -49,7 +49,9 @@ jobs:
       REQUESTED_BILLS: ${{ inputs.bills || '' }}
       FULL_REFRESH: ${{ inputs.full_refresh || 'false' }}
       FETCH_TEXTS: ${{ inputs.fetch_texts || 'true' }}
-      RULESPEC_US_ROOT: ${{ github.workspace }}/rulespec-us
+      # rulespec-us became a monorepo; the federal tree (and the root all
+      # encoding file_paths are relative to) is its us/ subdirectory.
+      RULESPEC_US_ROOT: ${{ github.workspace }}/rulespec-us/us
     steps:
       - uses: actions/checkout@v4
 
@@ -156,7 +158,9 @@ jobs:
           uv run --project packages/scrapers axiom-bills scrape "${scrape_args[@]}"
           uv run --project packages/scrapers axiom-bills reclassify --jurisdiction us
           uv run --project packages/scrapers axiom-bills reclassify-kinds --jurisdiction us
-          uv run --project packages/scrapers axiom-bills index-encodings --repo "$RULESPEC_US_ROOT"
+          # --repo-name keeps the identifier (and the file_path
+          # convention) that prod encodings already use.
+          uv run --project packages/scrapers axiom-bills index-encodings --repo "$RULESPEC_US_ROOT" --repo-name rulespec-us
           if [[ "$FETCH_TEXTS" != "false" ]]; then
             uv run --project packages/scrapers axiom-bills fetch-texts --jurisdiction us
             uv run --project packages/scrapers axiom-bills precompute-diffs --jurisdiction us

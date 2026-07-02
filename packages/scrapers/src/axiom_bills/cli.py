@@ -889,6 +889,15 @@ def index_encodings(repo: str, jurisdiction: str, repo_name: str | None) -> None
         f"Indexed {name}: scanned={counts['scanned']} "
         f"indexed={counts['indexed']} skipped={counts['skipped']}"
     )
+    if counts["scanned"] and not counts["indexed"]:
+        # Every YAML skipped means the path convention didn't match —
+        # e.g. the repo reorganized (statutes/ moved under us/). Fail
+        # loudly: downstream steps would otherwise recompute every diff
+        # with zero encodings and sync the degradation to prod.
+        raise click.ClickException(
+            f"scanned {counts['scanned']} YAML files but indexed none — "
+            "wrong --repo root for this repo's layout?"
+        )
 
 
 @main.command(name="reclassify-kinds")
