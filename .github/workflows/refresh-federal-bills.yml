@@ -25,6 +25,10 @@ on:
         description: "Optional comma-separated bill ids (e.g. hr/372,s/268) to scrape instead of the recent-updates listing. For targeted backfills."
         required: false
         type: string
+      congress:
+        description: "Optional Congress number for targeted scrapes (bill numbers repeat across Congresses — H.R.7024 exists in the 118th and 119th as unrelated bills)."
+        required: false
+        type: string
   schedule:
     - cron: "7 * * * *"
 
@@ -47,6 +51,7 @@ jobs:
       REQUESTED_SINCE: ${{ inputs.since || '' }}
       REQUESTED_LIMIT: ${{ inputs.limit || '' }}
       REQUESTED_BILLS: ${{ inputs.bills || '' }}
+      REQUESTED_CONGRESS: ${{ inputs.congress || '' }}
       FULL_REFRESH: ${{ inputs.full_refresh || 'false' }}
       FETCH_TEXTS: ${{ inputs.fetch_texts || 'true' }}
       # rulespec-us became a monorepo; the federal tree (and the root all
@@ -152,6 +157,9 @@ jobs:
           fi
           if [[ -n "$REQUESTED_LIMIT" ]]; then
             scrape_args+=(--limit "$REQUESTED_LIMIT")
+          fi
+          if [[ -n "$REQUESTED_CONGRESS" ]]; then
+            scrape_args+=(--congress "$REQUESTED_CONGRESS")
           fi
 
           echo "Starting federal refresh at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
