@@ -706,6 +706,27 @@ def hydrate_variants() -> None:
         click.echo(f"  {k:<14} {v}")
 
 
+@main.command(name="verify-variants")
+@click.option("--rulespec-root", default=None,
+              help="Rulespec checkout the file_paths are relative to "
+                   "(default: RULESPEC_US_ROOT or ~/rulespec-us/us).")
+@click.option("--encode-bin", default=None,
+              help="axiom-encode CLI (default: AXIOM_ENCODE_BIN or PATH).")
+def verify_variants(rulespec_root: str | None, encode_bin: str | None) -> None:
+    """Execute rulespec companion tests against every patched variant.
+
+    Swaps each patched YAML into a scratch copy of the rulespec
+    checkout and runs its .test.yaml via `axiom-encode test` — the
+    executable proof that a draft preserves back-dated computation.
+    Outcome is stamped into the variant note as 'engine-test: ...'.
+    Requires the axiom-encode toolchain.
+    """
+    from ._common.variant_verify import verify_all
+    counts = verify_all(rulespec_root=rulespec_root, encode_bin=encode_bin)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<10} {v}")
+
+
 @main.command(name="export-variants")
 @click.option("--out", "-o", required=True,
               type=click.Path(file_okay=False),
