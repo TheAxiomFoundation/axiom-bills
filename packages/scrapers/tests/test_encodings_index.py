@@ -128,6 +128,32 @@ def test_vanished_file_is_removed(db_path, repo):
     assert set(_encodings(db_path)) == {"statutes/26/32.yaml"}
 
 
+def test_rule_sources_are_canonicalized_at_index_time(db_path, repo):
+    """Regression (H.R.9414 Pell panel): the file wrote its sources as
+    '20 U.S.C. 1070a(b)(5)' and the raw string reached the DB, so every
+    downstream prefix comparison silently failed. Canonicalize at the
+    ingestion boundary."""
+    (repo / "statutes" / "26" / "45.yaml").write_text(dedent("""\
+        format: rulespec/v1
+        rules:
+          - name: dotted_source_rule
+            kind: parameter
+            source: 26 U.S.C. § 45(a)(1)
+          - name: weird_source_rule
+            kind: parameter
+            source: Revenue Procedure 2024-40 Section 2.01
+    """))
+    counts = index_repo(repo, jurisdiction="us", repo_name="rulespec-us",
+                        db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    stored = {r[0]: r[1] for r in conn.execute(
+        "select rule_name, rule_source from encoded_rules")}
+    conn.close()
+    assert stored["dotted_source_rule"] == "26 USC 45(a)(1)"
+    # Unrecognized forms are kept (normalized) but counted loudly.
+    assert counts["nonconforming_sources"] == 1
+
+
 def test_rules_and_atoms_refresh_without_duplicates(db_path, repo):
     index_repo(repo, jurisdiction="us", repo_name="rulespec-us", db_path=db_path)
     index_repo(repo, jurisdiction="us", repo_name="rulespec-us", db_path=db_path)

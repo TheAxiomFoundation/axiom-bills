@@ -27,20 +27,25 @@ ADDITIVE_OP_KINDS = {"add-end", "insert-after", "insert-before"}
 
 _USC_DOTTED = re.compile(r"\bU\.\s*S\.\s*C\.")
 _CFR_DOTTED = re.compile(r"\bC\.\s*F\.\s*R\.")
+# 'IRC section 63(c)(5)' / 'IRC § 24(h)' — the Internal Revenue Code is
+# codified verbatim as Title 26, so this act-name form maps exactly.
+_IRC_SECTION = re.compile(r"\bIRC\s+(?:section\s+|§\s*)?(?=\d)")
 
 
 def normalize_citation(citation: str) -> str:
     """Collapse citation format drift to the tracker's canonical form.
 
-    rulespec-us files aren't uniform: some rule sources say
-    '20 U.S.C. 1070a(b)(5)' where the tracker says '20 USC 1070a(b)(5)'.
-    Prefix comparisons silently fail across that drift.
+    rulespec-us files aren't uniform: rule sources appear as
+    '20 U.S.C. 1070a(b)(5)', '26 USC 32(a)', 'IRC section 63(c)(5)',
+    with or without '§'. Prefix comparisons silently fail across the
+    drift, so every comparison boundary routes through here.
     """
     if not citation:
         return citation
     out = _USC_DOTTED.sub("USC", citation)
     out = _CFR_DOTTED.sub("CFR", out)
-    out = out.replace("§", " ").replace("§", " ")
+    out = _IRC_SECTION.sub("26 USC ", out)
+    out = out.replace("§", " ")
     return re.sub(r"\s+", " ", out).strip()
 
 
@@ -59,9 +64,17 @@ def is_ancestor(ancestor: str, descendant: str) -> bool:
 
 def op_affects_encoding(encoding_citation: str, op_target: str,
                         op_kind: str) -> bool:
-    """Can this op change what `encoding_citation`'s file encodes?"""
+    """Can this op change what `encoding_citation`'s file encodes?
+
+    Inputs are normalized here — this is the single choke point every
+    scope decision flows through, so format drift ('20 U.S.C. 1070a')
+    can never silently fail a comparison even if a caller passes a raw
+    string.
+    """
     if not encoding_citation or not op_target:
         return False
+    encoding_citation = normalize_citation(encoding_citation)
+    op_target = normalize_citation(op_target)
     if encoding_citation == op_target:
         return True
     # File encodes a scope containing the target: any edit inside it

@@ -270,3 +270,19 @@ describe("citation format drift (U.S.C. vs USC)", () => {
     expect(out.shown).toBe(2);
   });
 });
+
+describe("normCitation IRC form", () => {
+  const IRC_FILE = [
+    "format: rulespec/v1",
+    "rules:",
+    "  - name: standard_deduction_married",
+    "    source: IRC section 63(c)(2)(A)",
+    "",
+  ].join("\n");
+
+  it("matches IRC-section-style sources against USC citations", () => {
+    const out = sliceRulesBySource(IRC_FILE, "26 USC 63(c)");
+    expect(out.fallback).toBe(false);
+    expect(out.shown).toBe(1);
+  });
+});
