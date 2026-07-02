@@ -51,10 +51,14 @@ class RateLimitedClient:
                 time.sleep(wait)
             self._last_request[host] = time.monotonic()
 
+    # 6 attempts with waits up to 120s tolerate ~5 minutes of upstream
+    # degradation. 4 attempts capped at 30s killed a 58-minute full
+    # federal refresh when Congress.gov had a slow spell — one lost run
+    # costs far more than a few minutes of patience.
     @retry(
         retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=1, max=120),
+        stop=stop_after_attempt(6),
         reraise=True,
     )
     def get(self, url: str, **kwargs) -> httpx.Response:
@@ -65,10 +69,14 @@ class RateLimitedClient:
             response.raise_for_status()
         return response
 
+    # 6 attempts with waits up to 120s tolerate ~5 minutes of upstream
+    # degradation. 4 attempts capped at 30s killed a 58-minute full
+    # federal refresh when Congress.gov had a slow spell — one lost run
+    # costs far more than a few minutes of patience.
     @retry(
         retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=1, max=120),
+        stop=stop_after_attempt(6),
         reraise=True,
     )
     def post(self, url: str, **kwargs) -> httpx.Response:
