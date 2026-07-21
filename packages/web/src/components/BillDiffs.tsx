@@ -65,7 +65,8 @@ export function BillDiffs({ billId }: { billId: string }) {
   const section = visible[activeIdx];
 
   return (
-    <section className="diffs">
+    // id anchors deep links from the Impact graph's detail pane.
+    <section className="diffs" id="bill-diffs">
       <h3>Section-by-section change</h3>
       <p className="hint">
         Diff is computed by parsing the bill’s amendment instructions and

@@ -633,9 +633,10 @@ def reclassify(jurisdiction: str) -> None:
 def fetch_texts(jurisdiction: str, limit: int | None) -> None:
     """Download bill text from bill_versions URLs into bill_texts.
 
-    Prefers HTML > XML > TXT formats. PDFs are skipped in the prototype.
-    Re-running is idempotent — already-stored rows are only rewritten
-    when the SHA changes.
+    Prefers HTML > XML > TXT > PDF formats (PDF text is extracted via
+    pypdf; scanned/encrypted PDFs are skipped). Re-running is
+    idempotent — already-stored rows are only rewritten when the SHA
+    changes.
     """
     from ._common.text_fetcher import fetch_for_jurisdiction
     counts = fetch_for_jurisdiction(jurisdiction, limit=limit)
@@ -686,6 +687,89 @@ def propose_llm_variants(jurisdiction: str | None, limit: int | None,
                          dry_run=dry_run, retry_rejected=retry_rejected)
     for k, v in sorted(counts.items()):
         click.echo(f"  {k:<12} {v}")
+
+
+@main.command(name="reconcile")
+@click.option("--jurisdiction", "-j", default=None)
+@click.option("--bill", "bill_id", default=None,
+              help="Limit to one bill id.")
+@click.option("--limit", "-n", type=int, default=None,
+              help="Stop after N sections analyzed.")
+@click.option("--dry-run", is_flag=True,
+              help="List sections that WOULD be analyzed without "
+                   "calling the API.")
+def reconcile(jurisdiction: str | None, bill_id: str | None,
+              limit: int | None, dry_run: bool) -> None:
+    """Agentic bill↔encoding reconciliation verdicts.
+
+    For every bill section that touches an encoded RuleSpec file (an
+    encoding match plus at least one applied/unapplied op), asks Claude
+    for two enum-constrained verdicts — billVsLaw (is the change
+    substantive?) and modelVsLaw (would the current encoding be wrong
+    post-enactment?) — and stores them in bill_reconciliations.
+    Idempotent: sections whose input fingerprint is unchanged are
+    skipped. Requires ANTHROPIC_API_KEY in env (or
+    ~/.axiom-bills/keys.env locally) unless --dry-run.
+    """
+    from ._common.reconcile_llm import reconcile_all
+    counts = reconcile_all(jurisdiction=jurisdiction, bill_id=bill_id,
+                           limit=limit, dry_run=dry_run)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<14} {v}")
+
+
+@main.command(name="trigger-encodes")
+@click.option("--jurisdiction", "-j", default=None)
+@click.option("--run", "run_queue", is_flag=True,
+              help="LOCAL ONLY: after the enqueue scan, shell out to "
+                   "`axiom-encode encode` for each pending queue row "
+                   "(validate-only; never --apply). Needs "
+                   "AXIOM_CORPUS_PATH, AXIOM_POLICY_REPO_PATH and "
+                   "AXIOM_RULES_ENGINE_PATH in env.")
+@click.option("--limit", "-n", type=int, default=None,
+              help="With --run: stop after N encoder invocations.")
+@click.option("--dry-run", is_flag=True,
+              help="Print what the scan WOULD enqueue without writing.")
+def trigger_encodes(jurisdiction: str | None, run_queue: bool,
+                    limit: int | None, dry_run: bool) -> None:
+    """Materialize the re-encode queue from the staleness signals.
+
+    Scans bills flagged needs_new_encoding (backlog citations from their
+    diffs), rule_variants superseded by a fingerprint change, and
+    enacted/signed bills that amend encoded files, and enqueues one
+    encode_queue row per (bill, citation, reason). Enqueue-once: an
+    existing row — including a dismissed one — is never re-enqueued.
+    CI runs the scan only; --run is the local runner.
+    """
+    from ._common.encode_queue import enqueue_scan, run_pending
+    if run_queue and dry_run:
+        raise click.UsageError("--run and --dry-run are mutually exclusive.")
+    counts = enqueue_scan(jurisdiction=jurisdiction, dry_run=dry_run)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<20} {v}")
+    if run_queue:
+        click.echo("Running pending queue rows (validate-only, no --apply):")
+        run_counts = run_pending(jurisdiction=jurisdiction, limit=limit)
+        for k, v in sorted(run_counts.items()):
+            click.echo(f"  {k:<20} {v}")
+
+
+@main.command(name="hydrate-reconciliations")
+def hydrate_reconciliations() -> None:
+    """Copy still-valid reconciliation verdicts from Supabase into
+    local SQLite.
+
+    Run after `precompute-diffs` and before `reconcile` when working
+    from a fresh database (CI does this every run): any remote verdict
+    whose section fingerprint still matches the locally recomputed one
+    is copied down, so `reconcile` skips those sections instead of
+    re-spending tokens. Requires SUPABASE_URL and SUPABASE_SERVICE_KEY.
+    """
+    from ._common.supabase_sync import hydrate_reconciliations as hydrate
+    from ._common.db import DEFAULT_DB
+    counts = hydrate(DEFAULT_DB)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<14} {v}")
 
 
 @main.command(name="hydrate-variants")
@@ -929,6 +1013,42 @@ def index_encodings(repo: str, jurisdiction: str, repo_name: str | None) -> None
             f"scanned {counts['scanned']} YAML files but indexed none — "
             "wrong --repo root for this repo's layout?"
         )
+
+
+@main.command(name="precompute-graph")
+@click.option("--repo", required=True, type=click.Path(exists=True, file_okay=False),
+              help="Path to a local rulespec-* clone (e.g. ~/rulespec-us).")
+@click.option("--repo-name", default=None,
+              help="Repo identifier stored in encoding_graphs.repo. "
+                   "Defaults to the directory name of --repo.")
+def precompute_graph(repo: str, repo_name: str | None) -> None:
+    """Build the RuleSpec dependency-graph snapshot for a rulespec-* repo.
+
+    Derives one node per module YAML and edges from imports / import
+    atoms / formula references, then upserts the JSON payload into
+    encoding_graphs (one row per repo). Run after index-encodings so
+    the graph reflects the same checkout.
+    """
+    from pathlib import Path
+    from ._common.rulespec_graph import build_graph, write_graph
+    repo_path = Path(repo).resolve()
+    name = repo_name or repo_path.name
+    graph = build_graph(repo_path, name)
+    counts = graph["meta"]["counts"]
+    if counts["sections"] == 0:
+        # Same failure mode index-encodings guards against: a wrong
+        # --repo root for the repo's layout would otherwise overwrite a
+        # good snapshot with an empty graph.
+        raise click.ClickException(
+            "built an empty graph (0 sections) — "
+            "wrong --repo root for this repo's layout?"
+        )
+    write_graph(name, graph)
+    click.echo(
+        f"Graph {name}: sections={counts['sections']} "
+        f"rules={counts['rules']} edges={counts['edges']} "
+        f"deferred={counts['deferredOutputs']}"
+    )
 
 
 @main.command(name="reclassify-kinds")

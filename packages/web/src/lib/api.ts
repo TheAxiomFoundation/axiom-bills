@@ -5,6 +5,10 @@
 // derived client-side from the Supabase rows.
 
 import { supabase } from "./supabase";
+import type { RulespecGraph } from "./graph/rulespec-graph";
+import type { BillReconciliationRow, TopicDiff } from "./reconcile/schema";
+
+export type { BillReconciliationRow } from "./reconcile/schema";
 
 export type Coverage = "full" | "stub" | "planned";
 
@@ -102,6 +106,11 @@ export type BillDetail = BillRow & {
   jurisdiction: string;
   jurisdiction_name: string;
   kind: BillKind;
+  // Materialized relevance flags (same columns the list filters use):
+  // the bill amends encoded rulespec files / adds provisions to an
+  // encoded program area that no rule file covers yet.
+  touches_rulespec: boolean;
+  needs_new_encoding: boolean;
   summary: string | null;
   subjects: string[];
   sponsors: { name: string; role?: string; party?: string; district?: string }[];
@@ -455,6 +464,8 @@ async function bill(id: string): Promise<BillDetail> {
     session_name: (r as any).sessions?.name ?? "",
     jurisdiction: r.jurisdiction,
     jurisdiction_name: (r as any).jurisdictions?.name ?? r.jurisdiction,
+    touches_rulespec: Boolean(r.touches_rulespec),
+    needs_new_encoding: Boolean(r.needs_new_encoding),
     summary: r.summary,
     subjects: r.subjects ?? [],
     sponsors: r.sponsors ?? [],
@@ -505,6 +516,82 @@ async function billDiffs(id: string): Promise<BillDiffs> {
   return (data?.diffs as BillDiffs | null) ?? { sections: [] };
 }
 
+async function encodingGraph(repo: string): Promise<RulespecGraph | null> {
+  // One precomputed section-dependency graph per rulespec repo
+  // (bills.encoding_graphs, written by the scrapers' precompute-graph).
+  // Missing row = graph not generated yet; callers render a fallback.
+  const { data, error } = await supabase
+    .from("encoding_graphs")
+    .select("graph")
+    .eq("repo", repo)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.graph as RulespecGraph | null) ?? null;
+}
+
+export type EncodeQueueRow = {
+  id: string;
+  citation: string;
+  corpus_citation_path: string | null;
+  reason: "needs_new_encoding" | "stale_variant" | "enacted_touch";
+  status: "pending" | "ran" | "failed" | "dismissed";
+  enqueued_at: string | null;
+};
+
+async function encodeQueue(billId: string): Promise<EncodeQueueRow[]> {
+  // Re-encode trigger queue rows for one bill (bills.encode_queue,
+  // written by the scrapers' `trigger-encodes` scan; anon read). The
+  // bill page only surfaces pending rows as a small chip.
+  const { data, error } = await supabase
+    .from("encode_queue")
+    .select("id, citation, corpus_citation_path, reason, status, enqueued_at")
+    .eq("bill_id", billId)
+    .order("citation");
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({
+    id: r.id,
+    citation: r.citation,
+    corpus_citation_path: r.corpus_citation_path ?? null,
+    reason: r.reason,
+    status: r.status,
+    enqueued_at: r.enqueued_at ?? null,
+  }));
+}
+
+async function billReconciliations(id: string): Promise<BillReconciliationRow[]> {
+  // Agentic per-section verdicts (bills.bill_reconciliations, written by
+  // the scrapers' `reconcile` pass). The payload JSONB is the verdict
+  // pair: { topic, section, billVsLaw, modelVsLaw }. Rows whose payload
+  // is missing either layer are skipped — a malformed row must not take
+  // the whole triage view down.
+  const { data, error } = await supabase
+    .from("bill_reconciliations")
+    .select("id, bill_id, section_citation, payload, fingerprint, model, computed_at")
+    .eq("bill_id", id)
+    .order("section_citation");
+  if (error) throw error;
+  const out: BillReconciliationRow[] = [];
+  for (const r of data ?? []) {
+    const p = r.payload as Partial<TopicDiff> | null;
+    if (!p || !p.billVsLaw || !p.modelVsLaw) continue;
+    out.push({
+      id: r.id,
+      bill_id: r.bill_id,
+      section_citation: r.section_citation,
+      payload: {
+        topic: p.topic || r.section_citation,
+        section: p.section || r.section_citation,
+        billVsLaw: p.billVsLaw,
+        modelVsLaw: p.modelVsLaw,
+      },
+      fingerprint: r.fingerprint ?? null,
+      model: r.model ?? null,
+      computed_at: r.computed_at ?? null,
+    });
+  }
+  return out;
+}
+
 async function recent(
   status: NormalizedStatus = "enacted",
   _kind?: BillKind[],
@@ -540,5 +627,8 @@ export const api = {
   bill,
   billDiffs,
   billVariants,
+  billReconciliations,
+  encodeQueue,
+  encodingGraph,
   recent,
 };

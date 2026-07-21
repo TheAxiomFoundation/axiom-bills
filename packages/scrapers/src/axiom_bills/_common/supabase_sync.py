@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -685,6 +686,93 @@ def sync(db_path: str) -> dict[str, int]:
                     raise
                 counts["rule_variants"] = 0
 
+        # 9. Encoding graphs — one RulespecGraph JSON snapshot per
+        #    rulespec repo, written by precompute-graph. A run that
+        #    never built graphs (state matrix jobs, pre-059 DBs) has
+        #    no rows and says nothing about the remote table.
+        try:
+            graph_rows = _rows(local, """
+                SELECT repo, graph, generated_from, generated_at
+                  FROM encoding_graphs
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            graph_rows = []
+        for r in graph_rows:
+            r["graph"] = json.loads(r["graph"])
+        # Small chunk: each row is a whole dependency graph.
+        counts["encoding_graphs"] = _upsert(
+            client, "encoding_graphs", graph_rows, on_conflict="repo", chunk=10
+        )
+
+        # 10. Bill reconciliations — per-section agentic verdicts
+        #     written by `reconcile`. Tolerate a pre-060 local DB with
+        #     no table (state matrix jobs never run reconcile).
+        try:
+            rec_rows = _rows(local, """
+                SELECT id, bill_id, section_citation, payload, fingerprint,
+                       model, computed_at
+                  FROM bill_reconciliations
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            rec_rows = []
+        for r in rec_rows:
+            r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
+            r["payload"] = json.loads(r["payload"])
+        counts["bill_reconciliations"] = _upsert(
+            client, "bill_reconciliations", rec_rows,
+            on_conflict="bill_id,section_citation", chunk=200,
+        )
+
+        # 11. Encode queue — enqueue-once rows materialized by
+        #     `trigger-encodes`. Tolerate a pre-061 local DB with no
+        #     table. The queue's contract is that an existing row keeps
+        #     its status (a dismissed row stays dismissed), and CI
+        #     re-scans from a fresh SQLite every run — so a local row
+        #     whose (bill, citation, reason) already exists remotely is
+        #     only pushed when a local `--run` actually resolved it;
+        #     fresh 'pending' duplicates are dropped instead of
+        #     clobbering the remote status.
+        try:
+            queue_rows = _rows(local, """
+                SELECT id, bill_id, citation, corpus_citation_path, reason,
+                       status, detail, enqueued_at, resolved_at
+                  FROM encode_queue
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            queue_rows = []
+        for r in queue_rows:
+            r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
+        remote_queue = _remote_rows_by_in(
+            client,
+            "encode_queue",
+            select="id,bill_id,citation,reason",
+            column="bill_id",
+            values=(r["bill_id"] for r in queue_rows),
+        )
+        remote_by_key = {
+            (q["bill_id"], q["citation"], q["reason"]): q["id"]
+            for q in remote_queue
+        }
+        push_rows = []
+        for r in queue_rows:
+            remote_id = remote_by_key.get(
+                (r["bill_id"], r["citation"], r["reason"]))
+            if remote_id is None:
+                push_rows.append(r)
+            elif r["status"] != "pending":
+                r["id"] = remote_id
+                push_rows.append(r)
+        counts["encode_queue"] = _upsert(
+            client, "encode_queue", push_rows,
+            on_conflict="bill_id,citation,reason",
+        )
+
     local.close()
     return counts
 
@@ -770,6 +858,119 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
                  WHERE id = ?
                 """,
                 (remote["patched_yaml"], remote["proposed_model"], row["id"]),
+            )
+            counts["hydrated"] += 1
+        local.commit()
+    local.close()
+    return counts
+
+
+def hydrate_reconciliations(db_path: str) -> dict[str, int]:
+    """Pull still-valid reconciliation verdicts from Supabase into
+    local SQLite.
+
+    CI runs start from an empty SQLite, so verdicts from earlier runs
+    live only in Supabase — without hydration the ``reconcile``
+    fingerprint skip never fires and the same sections get re-analyzed
+    hourly. Run after ``precompute-diffs`` and before ``reconcile``:
+    every candidate section's fingerprint is recomputed from the fresh
+    local diffs (the exact skip key ``reconcile`` uses), and any remote
+    row whose fingerprint still matches is copied down so the LLM is
+    only called for genuinely new or changed sections.
+    """
+    from .reconcile_llm import candidate_sections, section_fingerprint
+
+    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
+    local = _local(db_path)
+    try:
+        bill_rows = [dict(r) for r in local.execute("""
+            SELECT id, jurisdiction, session_id, chamber, number, diffs
+              FROM bills
+             WHERE diffs IS NOT NULL
+        """)]
+        # Probe the target table up front so a pre-060 DB degrades to a
+        # no-op instead of failing mid-hydration.
+        local.execute("SELECT 1 FROM bill_reconciliations LIMIT 1")
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            local.close()
+            return counts
+        raise
+
+    pending: list[tuple[dict, str, str]] = []  # (bill row, citation, fp)
+    for row in bill_rows:
+        diffs = (json.loads(row["diffs"])
+                 if isinstance(row["diffs"], str) else row["diffs"])
+        for section in candidate_sections(diffs):
+            fingerprint = section_fingerprint(section)
+            existing = local.execute(
+                """
+                SELECT fingerprint FROM bill_reconciliations
+                 WHERE bill_id = ? AND section_citation = ?
+                """, (row["id"], section["citation"]),
+            ).fetchone()
+            if existing and existing["fingerprint"] == fingerprint:
+                continue  # already current locally — reconcile will skip
+            pending.append((row, section["citation"], fingerprint))
+    counts["candidates"] = len(pending)
+    if not pending:
+        local.close()
+        return counts
+
+    with _client() as client:
+        session_rows = local.execute(
+            "SELECT id, jurisdiction, name FROM sessions"
+        ).fetchall()
+        session_id_map = _remote_session_ids(client, session_rows)
+        bill_lookup_rows = list({
+            row["id"]: {
+                "id": row["id"],
+                "jurisdiction": row["jurisdiction"],
+                "session_id": session_id_map.get(row["session_id"], row["session_id"]),
+                "chamber": row["chamber"],
+                "number": row["number"],
+            }
+            for row, _, _ in pending
+        }.values())
+        bill_id_map = _remote_bill_ids(client, bill_lookup_rows)
+
+        remote_rows = _remote_rows_by_in(
+            client,
+            "bill_reconciliations",
+            select=("bill_id,section_citation,payload,fingerprint,"
+                    "model,computed_at"),
+            column="bill_id",
+            values=(bill_id_map[row["id"]] for row, _, _ in pending),
+        )
+        remote_by_key = {
+            (r["bill_id"], r["section_citation"]): r
+            for r in remote_rows
+        }
+
+        for row, citation, fingerprint in pending:
+            remote = remote_by_key.get((bill_id_map[row["id"]], citation))
+            if remote is None:
+                continue
+            if remote["fingerprint"] != fingerprint:
+                counts["stale_remote"] += 1
+                continue
+            payload = remote["payload"]
+            if not isinstance(payload, str):
+                payload = json.dumps(payload)
+            local.execute(
+                """
+                INSERT INTO bill_reconciliations
+                    (id, bill_id, section_citation, payload, fingerprint,
+                     model, computed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bill_id, section_citation) DO UPDATE SET
+                    payload = excluded.payload,
+                    fingerprint = excluded.fingerprint,
+                    model = excluded.model,
+                    computed_at = excluded.computed_at
+                """,
+                (uuid.uuid4().hex, row["id"], citation, payload,
+                 fingerprint, remote["model"], remote["computed_at"]),
             )
             counts["hydrated"] += 1
         local.commit()
