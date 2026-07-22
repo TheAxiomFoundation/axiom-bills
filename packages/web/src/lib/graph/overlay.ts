@@ -13,6 +13,7 @@
 // Pure functions only (no React, no fetching) so this is unit-testable.
 
 import type { BillDiffs } from "../api";
+import { buildAdjacency, lineageSet } from "./rulespec-graph";
 import type { RulespecGraph, SectionEdge, SectionNode } from "./rulespec-graph";
 
 export type BillForOverlay = {
@@ -154,4 +155,30 @@ export function billOverlay(
   }
 
   return { sections, edges, diffCitationById, billNodeId };
+}
+
+// The Medicaid-scale reference app rendered whole-program graphs of a
+// few dozen sections; a rulespec monorepo snapshot has hundreds, most
+// of them unrelated to any one bill. Focus the graph on the bill's
+// neighborhood: the touched/placeholder/bill nodes plus the full
+// dependency lineage of each touched section, and only edges between
+// surviving nodes. Returns the input unchanged when nothing is touched
+// (no bill node means there is nothing to focus on).
+export function focusOnBill(overlay: OverlayResult): OverlayResult {
+  if (!overlay.billNodeId) return overlay;
+  const adjacency = buildAdjacency(overlay.edges);
+  const keep = new Set<string>();
+  for (const s of overlay.sections) {
+    if (s.layer !== "baseline") keep.add(s.id);
+  }
+  for (const s of overlay.sections) {
+    if (s.layer === "bill") {
+      for (const id of lineageSet(s.id, adjacency)) keep.add(id);
+    }
+  }
+  return {
+    ...overlay,
+    sections: overlay.sections.filter((s) => keep.has(s.id)),
+    edges: overlay.edges.filter((e) => keep.has(e.from) && keep.has(e.to)),
+  };
 }

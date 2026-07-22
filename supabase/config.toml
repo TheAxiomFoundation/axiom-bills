@@ -1,0 +1,21 @@
+# Local dev stack config (`supabase start`). Production settings live in
+# the Supabase dashboard; the one that matters to mirror here is the
+# exposed-schema list — the frontend reads the `bills` schema directly.
+project_id = "axiom-bills"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "bills"]
+extra_search_path = ["public"]
+max_rows = 1000
+
+[db]
+port = 54322
+
+[studio]
+enabled = true
+port = 54323
+
+[analytics]
+enabled = false

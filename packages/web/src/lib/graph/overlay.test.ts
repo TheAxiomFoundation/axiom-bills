@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import type { BillDiffs, BillDiffSection } from "../api";
 import type { RulespecGraph, SectionNode } from "./rulespec-graph";
-import { billOverlay, citationFromFilePath } from "./overlay";
+import { billOverlay, citationFromFilePath, focusOnBill } from "./overlay";
 import { buildAdjacency, layoutPositions, lineageSet } from "./rulespec-graph";
 
 function section(over: Partial<SectionNode> & { id: string }): SectionNode {
@@ -289,5 +289,52 @@ describe("lineage helpers", () => {
     expect(pos.size).toBe(2);
     // rankdir LR: the dependent sits to the right of its dependency.
     expect(pos.get("b")!.x).toBeGreaterThan(pos.get("a")!.x);
+  });
+});
+
+describe("focusOnBill", () => {
+  // Wider graph: an island unrelated to the touched section, plus the
+  // 3-node lineage chain the bill lands in.
+  const WIDE: RulespecGraph = {
+    ...GRAPH,
+    sections: [
+      ...GRAPH.sections,
+      section({ id: "42 USC 1396a", group: "statutes/42" }),
+      section({ id: "42 USC 1396d", group: "statutes/42" }),
+    ],
+    edges: [
+      ...GRAPH.edges,
+      { from: "42 USC 1396a", to: "42 USC 1396d", type: "import" },
+    ],
+  };
+
+  it("keeps the touched lineage and drops unrelated islands", () => {
+    const diffs: BillDiffs = {
+      sections: [
+        diffSection({
+          citation: "26 USC 32",
+          has_rulespec: true,
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+        }),
+      ],
+    };
+    const out = focusOnBill(billOverlay(WIDE, diffs, BILL));
+    const ids = out.sections.map((s) => s.id);
+    expect(ids).toContain("26 USC 32");        // touched
+    expect(ids).toContain("26 USC 152");       // upstream lineage
+    expect(ids).toContain("7 CFR 273.3");      // downstream lineage
+    expect(ids).toContain(BILL.number);        // synthetic bill node
+    expect(ids).not.toContain("42 USC 1396a"); // unrelated island
+    expect(ids).not.toContain("42 USC 1396d");
+    for (const e of out.edges) {
+      expect(ids).toContain(e.from);
+      expect(ids).toContain(e.to);
+    }
+  });
+
+  it("is a no-op when the bill touches nothing", () => {
+    const diffs: BillDiffs = { sections: [] };
+    const overlay = billOverlay(WIDE, diffs, BILL);
+    expect(focusOnBill(overlay)).toBe(overlay);
   });
 });

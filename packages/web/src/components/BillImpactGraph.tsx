@@ -47,9 +47,12 @@ import {
   type SectionEdge,
   type SectionNode as SectionData,
 } from "../lib/graph/rulespec-graph";
-import { billOverlay } from "../lib/graph/overlay";
+import { billOverlay, focusOnBill } from "../lib/graph/overlay";
 
-type ViewMode = "baseline" | "overlay";
+// "focus" trims the overlay to the bill's neighborhood — monorepo
+// snapshots run to hundreds of sections and the full canvas is
+// unreadable at that scale. "overlay" keeps the whole repo visible.
+type ViewMode = "baseline" | "overlay" | "focus";
 
 // ─── Node rendering ─────────────────────────────────────────────────
 
@@ -183,7 +186,7 @@ function GraphView({
   diffs: BillDiffs;
   reconciliations: BillReconciliationRow[];
 }) {
-  const [mode, setMode] = useState<ViewMode>("overlay");
+  const [mode, setMode] = useState<ViewMode>("focus");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -193,6 +196,7 @@ function GraphView({
     () => billOverlay(graph, diffs, bill),
     [graph, diffs, bill],
   );
+  const focused = useMemo(() => focusOnBill(overlay), [overlay]);
 
   // Reconciliation verdicts keyed by every citation form we might meet:
   // the row's section_citation and the payload's target citation. Graph
@@ -226,10 +230,14 @@ function GraphView({
 
   // Baseline mode = the stored graph as-is; overlay mode adds the bill
   // node, relabelled touched sections, and backlog placeholders.
-  const activeSections: SectionData[] =
-    mode === "overlay" ? overlay.sections : graph.sections;
-  const activeEdges: SectionEdge[] =
-    mode === "overlay" ? overlay.edges : graph.edges;
+  const activeView =
+    mode === "focus" ? focused : mode === "overlay" ? overlay : null;
+  const activeSections: SectionData[] = activeView
+    ? activeView.sections
+    : graph.sections;
+  const activeEdges: SectionEdge[] = activeView
+    ? activeView.edges
+    : graph.edges;
 
   const sectionsById = useMemo(
     () => new Map(activeSections.map((s) => [s.id, s])),
@@ -267,7 +275,7 @@ function GraphView({
     );
 
     const flowNodes: Node[] = activeSections.map((section) => {
-      const verdict = mode === "overlay" ? verdictForNode(section.id) : null;
+      const verdict = mode !== "baseline" ? verdictForNode(section.id) : null;
       return {
         id: section.id,
         type: "section",
@@ -363,7 +371,7 @@ function GraphView({
         <p className="hint">
           The <code>{graph.meta.generatedFrom || "rulespec"}</code> encoding as
           a section-level dependency graph
-          {mode === "overlay" && overlay.billNodeId
+          {mode !== "baseline" && overlay.billNodeId
             ? ` — ${bill.number} touches ${touchedCount} encoded section${
                 touchedCount === 1 ? "" : "s"
               }${backlogCount > 0 ? ` and ${backlogCount} not-yet-encoded provision${backlogCount === 1 ? "" : "s"}` : ""}.`
@@ -384,11 +392,24 @@ function GraphView({
           </button>
           <button
             type="button"
-            className={mode === "overlay" ? "on" : ""}
+            className={
+              mode === "overlay" || (mode === "focus" && !overlay.billNodeId)
+                ? "on"
+                : ""
+            }
             onClick={() => setMode("overlay")}
           >
-            With {bill.number}
+            Full graph
           </button>
+          {overlay.billNodeId ? (
+            <button
+              type="button"
+              className={mode === "focus" ? "on" : ""}
+              onClick={() => setMode("focus")}
+            >
+              With {bill.number}
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -512,7 +533,7 @@ function GraphView({
                   : groupLabel.get(selected.group) ?? selected.group
               }
               diffCitation={overlay.diffCitationById[selected.id] ?? null}
-              verdict={mode === "overlay" ? verdictForNode(selected.id) : null}
+              verdict={mode !== "baseline" ? verdictForNode(selected.id) : null}
               mode={mode}
             />
           ) : (
@@ -598,7 +619,7 @@ function SectionDetail({
         </p>
       ) : null}
 
-      {mode === "overlay" && diffCitation && section.layer !== "statute" ? (
+      {mode !== "baseline" && diffCitation && section.layer !== "statute" ? (
         <p className="impact-detail-link">
           <a href="#bill-diffs">
             {section.layer === "placeholder"
