@@ -122,12 +122,16 @@ a:hover { color: var(--color-accent-hover); }
 
 .brand {
   display: inline-flex;
-  align-items: baseline;
+  align-items: flex-end;
   gap: 0.5rem;
-  font-size: 22px;
-  font-weight: 300;
-  letter-spacing: -0.02em;
   color: var(--color-ink);
+}
+/* Settled Axiom Foundation lockup (outlined-path SVG); sized to match the old
+   22px typed wordmark's optical height. */
+.brand img {
+  display: block;
+  height: 28px;
+  width: auto;
 }
 .brand::after {
   content: "BILLS";
