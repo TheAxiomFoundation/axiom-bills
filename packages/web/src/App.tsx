@@ -5,7 +5,8 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <Link to="/" className="brand">
-          <span>Axiom</span>
+          {/* Settled brand lockup (w350, outlined paths) — never a live-font wordmark. */}
+          <img src="/axiom-foundation.svg" alt="Axiom Foundation" />
         </Link>
         <nav>
           <Link to="/">Jurisdictions</Link>
