@@ -6,7 +6,10 @@ export function App() {
       <header className="topbar">
         <Link to="/" className="brand">
           {/* Settled brand lockup (w350, outlined paths) — never a live-font wordmark. */}
-          <img src="/axiom-foundation.svg" alt="Axiom Foundation" />
+          <img
+            src={`${import.meta.env.BASE_URL}axiom-foundation.svg`}
+            alt="Axiom Foundation"
+          />
         </Link>
         <nav>
           <Link to="/">Jurisdictions</Link>
