@@ -10,6 +10,7 @@
   "rewrites": [
     { "source": "/bills/assets/:path*", "destination": "/assets/:path*" },
     { "source": "/bills/:file([^/]+\\.[a-zA-Z0-9]+)", "destination": "/:file" },
-    { "source": "/bills/:path*", "destination": "/index.html" }
+    { "source": "/bills", "destination": "/index.html" },
+    { "source": "/bills/:path(.*)", "destination": "/index.html" }
   ]
 }
