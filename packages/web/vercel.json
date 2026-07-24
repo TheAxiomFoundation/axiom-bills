@@ -4,7 +4,12 @@
   "installCommand": "npm install",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "redirects": [
+    { "source": "/", "destination": "https://axiom.org/bills", "permanent": true }
+  ],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/bills/assets/:path*", "destination": "/assets/:path*" },
+    { "source": "/bills/:file([^/]+\\.[a-zA-Z0-9]+)", "destination": "/:file" },
+    { "source": "/bills/:path*", "destination": "/index.html" }
   ]
 }
