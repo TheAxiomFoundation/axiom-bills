@@ -14,7 +14,6 @@ export function App() {
             <img src="/axiom-foundation.svg" alt="Axiom Foundation" />
           </a>
           <Link to="/" className="brand-title">
-            <span className="brand-eyebrow">Interactive</span>
             <span className="brand-name">Bills</span>
           </Link>
         </div>

@@ -149,15 +149,6 @@ a:hover { color: var(--color-accent-hover); }
 .brand-title,
 .brand-title:hover { color: var(--color-ink); }
 
-.brand-eyebrow {
-  font-family: var(--f-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--color-ink-muted);
-  line-height: 1;
-}
-
 .brand-name {
   font-family: var(--f-serif);
   font-size: 16px;
