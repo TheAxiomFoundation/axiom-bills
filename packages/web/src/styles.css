@@ -113,31 +113,58 @@ a:hover { color: var(--color-accent-hover); }
 
 .topbar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   padding: 28px 0 18px;
   margin-bottom: 32px;
   border-bottom: 1px solid var(--color-rule);
 }
 
+.brand-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .brand {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  font-size: 22px;
-  font-weight: 300;
-  letter-spacing: -0.02em;
+  align-items: center;
   color: var(--color-ink);
 }
-.brand::after {
-  content: "BILLS";
-  font-family: var(--f-mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  color: var(--color-ink-muted);
-  text-transform: uppercase;
+/* Settled Axiom Foundation lockup (outlined-path SVG). */
+.brand img {
+  display: block;
+  width: 100px;
+  height: auto;
 }
 .brand:hover { color: var(--color-ink); }
+
+.brand-title {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  border-left: 1px solid var(--color-rule);
+  padding-left: 12px;
+}
+.brand-title,
+.brand-title:hover { color: var(--color-ink); }
+
+.brand-eyebrow {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+  line-height: 1;
+}
+
+.brand-name {
+  font-family: var(--f-serif);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--color-ink);
+  line-height: 1.1;
+}
 
 .topbar nav { display: flex; gap: 22px; }
 .topbar nav a {
@@ -154,6 +181,9 @@ a:hover { color: var(--color-accent-hover); }
   color: var(--color-accent);
   border-bottom-color: var(--color-accent);
 }
+/* Uniform demo-header spec: All demos sits at 11px, otherwise inherits the
+   nav link treatment (mono, uppercase, muted; hover accent + underline rule). */
+.topbar nav a.all-demos { font-size: 11px; }
 
 main { min-height: 60vh; }
 

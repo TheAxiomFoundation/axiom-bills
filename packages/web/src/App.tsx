@@ -4,12 +4,26 @@ export function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <Link to="/" className="brand">
-          <span>Axiom</span>
-        </Link>
+        <div className="brand-group">
+          <a
+            href="https://axiom-foundation.org"
+            className="brand"
+            aria-label="Axiom Foundation"
+          >
+            {/* Settled brand lockup (w350, outlined paths) — never a live-font wordmark. */}
+            <img src="/axiom-foundation.svg" alt="Axiom Foundation" />
+          </a>
+          <Link to="/" className="brand-title">
+            <span className="brand-eyebrow">Interactive</span>
+            <span className="brand-name">Bills</span>
+          </Link>
+        </div>
         <nav>
           <Link to="/">Jurisdictions</Link>
           <Link to="/coverage">Coverage</Link>
+          <a href="https://axiom.org/demos" className="all-demos">
+            All demos
+          </a>
         </nav>
       </header>
       <main>
