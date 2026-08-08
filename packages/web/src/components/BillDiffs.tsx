@@ -360,7 +360,9 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
   const patchedSliced = patched ? sliceRulesBySource(patched, sectionCitation) : null;
   const noRuleGroundsHere = baselineSliced?.fallback ?? false;
   const sliceSummary = baselineSliced && baselineSliced.shown < baselineSliced.total
-    ? `Showing ${baselineSliced.shown} of ${baselineSliced.total} rules — filtered to ones whose source overlaps with ${sectionCitation}.`
+    ? `${baselineSliced.shown} of this file's ${baselineSliced.total} rules ` +
+      `encode${baselineSliced.shown === 1 ? "s" : ""} ${sectionCitation} — ` +
+      `the rest of the file is hidden.`
     : null;
   return (
     <div className="rs-variant">
