@@ -358,3 +358,107 @@ describe("focusOnBill", () => {
     expect(focusOnBill(overlay)).toBe(overlay);
   });
 });
+
+// ─── Rule-level impact ──────────────────────────────────────────────
+
+import { citationsIntersect, splitRulesByBillImpact } from "./overlay";
+import type { RuleSummary } from "./rulespec-graph";
+
+function rule(name: string, source: string | null): RuleSummary {
+  return { name, kind: "derived", dtype: null, period: null, source };
+}
+
+describe("citationsIntersect", () => {
+  it("matches equal citations, case- and whitespace-insensitively", () => {
+    expect(citationsIntersect("26 USC 25E(g)", "26  usc 25E(g)")).toBe(true);
+  });
+
+  it("matches a whole-section citation against its subdivisions, both ways", () => {
+    expect(citationsIntersect("26 USC 25E", "26 USC 25E(g)")).toBe(true);
+    expect(citationsIntersect("26 USC 25E(g)(1)", "26 USC 25E(g)")).toBe(true);
+    expect(citationsIntersect("7 CFR 273.3", "7 CFR 273.3(a)")).toBe(true);
+  });
+
+  it("rejects sibling subdivisions and lookalike sections", () => {
+    expect(citationsIntersect("26 USC 25E(a)", "26 USC 25E(g)")).toBe(false);
+    expect(citationsIntersect("26 USC 25E", "26 USC 25EE")).toBe(false);
+    expect(citationsIntersect("7 CFR 273.3", "7 CFR 273.30")).toBe(false);
+    expect(citationsIntersect("", "26 USC 25E")).toBe(false);
+  });
+});
+
+describe("splitRulesByBillImpact", () => {
+  // The real 25E shape: parameters pinned to (a)/(b)/(c), one derived
+  // rule sourcing (a), (d) and (g) — the termination clause S.5215 amends.
+  const RULES = [
+    rule("credit_cap", "26 USC 25E(a)(1)"),
+    rule("magi_joint_threshold", "26 USC 25E(b)"),
+    rule("credit_allowed", "26 USC 25E(a), 26 USC 25E(d), 26 USC 25E(g)"),
+    rule("unsourced_rule", null),
+  ];
+
+  it("isolates the rules whose sources cover the amended subsection", () => {
+    const { direct, other } = splitRulesByBillImpact(RULES, ["26 USC 25E(g)"]);
+    expect(direct.map((r) => r.name)).toEqual(["credit_allowed"]);
+    expect(other.map((r) => r.name)).toEqual([
+      "credit_cap",
+      "magi_joint_threshold",
+      "unsourced_rule",
+    ]);
+  });
+
+  it("marks every sourced rule direct when the bill amends the whole section", () => {
+    const { direct, other } = splitRulesByBillImpact(RULES, ["26 USC 25E"]);
+    expect(direct.map((r) => r.name)).toEqual([
+      "credit_cap",
+      "magi_joint_threshold",
+      "credit_allowed",
+    ]);
+    expect(other.map((r) => r.name)).toEqual(["unsourced_rule"]);
+  });
+
+  it("collects hits across several amended subsections", () => {
+    const { direct } = splitRulesByBillImpact(RULES, [
+      "26 USC 25E(b)",
+      "26 USC 25E(g)",
+    ]);
+    expect(direct.map((r) => r.name)).toEqual([
+      "magi_joint_threshold",
+      "credit_allowed",
+    ]);
+  });
+
+  it("returns everything as other when nothing was amended", () => {
+    const { direct, other } = splitRulesByBillImpact(RULES, []);
+    expect(direct).toEqual([]);
+    expect(other).toHaveLength(4);
+  });
+});
+
+describe("diffCitationsById", () => {
+  it("collects every amending diff section per node, first one kept for deep links", () => {
+    const diffs: BillDiffs = {
+      sections: [
+        diffSection({
+          citation: "26 USC 32(a)",
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+        }),
+        diffSection({
+          citation: "26 USC 32(g)",
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+        }),
+        // duplicate diff section for the same subsection: not repeated
+        diffSection({
+          citation: "26 USC 32(g)",
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+        }),
+      ],
+    };
+    const out = billOverlay(GRAPH, diffs, BILL);
+    expect(out.diffCitationById["26 USC 32"]).toBe("26 USC 32(a)");
+    expect(out.diffCitationsById["26 USC 32"]).toEqual([
+      "26 USC 32(a)",
+      "26 USC 32(g)",
+    ]);
+  });
+});

@@ -44,10 +44,15 @@ import {
   layoutPositions,
   lineageSet,
   type RulespecGraph,
+  type RuleSummary,
   type SectionEdge,
   type SectionNode as SectionData,
 } from "../lib/graph/rulespec-graph";
-import { billOverlay, focusOnBill } from "../lib/graph/overlay";
+import {
+  billOverlay,
+  focusOnBill,
+  splitRulesByBillImpact,
+} from "../lib/graph/overlay";
 
 // "focus" trims the overlay to the bill's neighborhood — monorepo
 // snapshots run to hundreds of sections and the full canvas is
@@ -533,6 +538,14 @@ function GraphView({
                   : groupLabel.get(selected.group) ?? selected.group
               }
               diffCitation={overlay.diffCitationById[selected.id] ?? null}
+              amendedCitations={
+                mode !== "baseline"
+                  ? overlay.diffCitationsById[selected.id] ?? []
+                  : []
+              }
+              edges={activeEdges}
+              sectionsById={sectionsById}
+              onSelect={setSelectedId}
               verdict={mode !== "baseline" ? verdictForNode(selected.id) : null}
               mode={mode}
             />
@@ -575,12 +588,20 @@ function SectionDetail({
   section,
   groupLabel,
   diffCitation,
+  amendedCitations,
+  edges,
+  sectionsById,
+  onSelect,
   verdict,
   mode,
 }: {
   section: SectionData;
   groupLabel: string;
   diffCitation: string | null;
+  amendedCitations: string[];
+  edges: SectionEdge[];
+  sectionsById: Map<string, SectionData>;
+  onSelect: (id: string) => void;
   verdict: TopicDiff | null;
   mode: ViewMode;
 }) {
@@ -593,6 +614,27 @@ function SectionDetail({
         verdict.modelVsLaw.materiality,
       )
     : null;
+
+  // Rule-level impact: which of this FILE's rules does the bill
+  // directly invalidate (source citation intersects an amended
+  // subsection), vs. the rest of the file.
+  const { direct, other } = splitRulesByBillImpact(
+    section.rules,
+    amendedCitations,
+  );
+  const directNames = new Set(direct.map((r) => r.name));
+
+  // Neighbors, split by direction. Edges run dependency → consumer, so
+  // edges INTO this node are what it depends on, and edges OUT of it
+  // are its upstream consumers — the sections whose encodings would be
+  // indirectly affected if this one changes. `via` names the imported
+  // rule, letting us mark consumers of the directly amended code.
+  const dependsOn = edges.filter(
+    (e) => e.to === section.id && e.type !== "implements",
+  );
+  const consumers = edges.filter(
+    (e) => e.from === section.id && e.type !== "implements",
+  );
   return (
     <div className="impact-detail-body">
       <p className="impact-detail-eyebrow">
@@ -643,28 +685,121 @@ function SectionDetail({
         </div>
       ) : null}
 
-      {section.rules.length > 0 ? (
+      {direct.length > 0 ? (
+        <div className="impact-detail-block">
+          <p className="impact-detail-block-title impact-detail-block-title--direct">
+            Directly amended by this bill ({direct.length})
+          </p>
+          <p className="impact-detail-hint">
+            Rules whose source citation covers{" "}
+            {amendedCitations.map((c, i) => (
+              <span key={c}>
+                {i > 0 ? ", " : ""}
+                <code>{c}</code>
+              </span>
+            ))}
+            — this is the encoded logic the amendment invalidates.
+          </p>
+          <RuleList rules={direct} direct />
+        </div>
+      ) : null}
+
+      {other.length > 0 ? (
         <div className="impact-detail-block">
           <p className="impact-detail-block-title">
-            Rules ({section.ruleCount})
+            {direct.length > 0
+              ? `Other rules in this file (${other.length})`
+              : `Rules (${section.ruleCount})`}
           </p>
-          <ul className="impact-rule-list">
-            {section.rules.map((rule) => (
-              <li key={rule.name}>
-                <code>{rule.name}</code>
-                <span className="impact-rule-meta">
-                  <em className={`impact-rule-kind impact-rule-kind--${rule.kind}`}>
-                    {rule.kind}
-                  </em>
-                  {rule.source ? (
-                    <span className="impact-rule-source">{rule.source}</span>
+          <RuleList rules={other} />
+        </div>
+      ) : null}
+
+      {consumers.length > 0 ? (
+        <div className="impact-detail-block">
+          <p className="impact-detail-block-title">
+            Used by · upstream consumers ({consumers.length})
+          </p>
+          <ul className="impact-neighbor-list">
+            {consumers.map((e) => {
+              const importsAmended = Boolean(e.via && directNames.has(e.via));
+              return (
+                <li key={`${e.from}->${e.to}`}>
+                  <button type="button" onClick={() => onSelect(e.to)}>
+                    <code>{e.to}</code>
+                    <span className="impact-neighbor-label">
+                      {sectionsById.get(e.to)?.label ?? ""}
+                    </span>
+                  </button>
+                  {e.via ? (
+                    <span
+                      className={
+                        importsAmended
+                          ? "impact-via impact-via--amended"
+                          : "impact-via"
+                      }
+                    >
+                      imports <code>{e.via}</code>
+                      {importsAmended ? " — amended above" : ""}
+                    </span>
                   ) : null}
-                </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
+      {dependsOn.length > 0 ? (
+        <div className="impact-detail-block">
+          <p className="impact-detail-block-title">
+            Depends on ({dependsOn.length})
+          </p>
+          <ul className="impact-neighbor-list">
+            {dependsOn.map((e) => (
+              <li key={`${e.from}->${e.to}`}>
+                <button type="button" onClick={() => onSelect(e.from)}>
+                  <code>{e.from}</code>
+                  <span className="impact-neighbor-label">
+                    {sectionsById.get(e.from)?.label ?? ""}
+                  </span>
+                </button>
+                {e.via ? (
+                  <span className="impact-via">
+                    provides <code>{e.via}</code>
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
         </div>
       ) : null}
     </div>
+  );
+}
+
+function RuleList({
+  rules,
+  direct = false,
+}: {
+  rules: RuleSummary[];
+  direct?: boolean;
+}) {
+  return (
+    <ul className="impact-rule-list">
+      {rules.map((rule) => (
+        <li key={rule.name} className={direct ? "impact-rule--direct" : ""}>
+          <code>{rule.name}</code>
+          <span className="impact-rule-meta">
+            <em className={`impact-rule-kind impact-rule-kind--${rule.kind}`}>
+              {rule.kind}
+            </em>
+            {rule.source ? (
+              <span className="impact-rule-source">{rule.source}</span>
+            ) : null}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }

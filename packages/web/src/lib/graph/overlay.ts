@@ -14,7 +14,12 @@
 
 import type { BillDiffs } from "../api";
 import { buildAdjacency, lineageSet } from "./rulespec-graph";
-import type { RulespecGraph, SectionEdge, SectionNode } from "./rulespec-graph";
+import type {
+  RulespecGraph,
+  RuleSummary,
+  SectionEdge,
+  SectionNode,
+} from "./rulespec-graph";
 
 export type BillForOverlay = {
   number: string;
@@ -24,9 +29,13 @@ export type BillForOverlay = {
 export type OverlayResult = {
   sections: SectionNode[];
   edges: SectionEdge[];
-  /** Graph-node id → bill diff-section citation, for deep links into
-   *  the section-by-section diff view. */
+  /** Graph-node id → first bill diff-section citation, for deep links
+   *  into the section-by-section diff view. */
   diffCitationById: Record<string, string>;
+  /** Graph-node id → ALL diff-section citations that touched it. A bill
+   *  can amend several subsections of one encoded file (each its own
+   *  diff section); rule-level impact needs every one of them. */
+  diffCitationsById: Record<string, string[]>;
   /** Id of the synthetic bill node, or null when the bill touches
    *  nothing in this graph. */
   billNodeId: string | null;
@@ -77,8 +86,16 @@ export function billOverlay(
     if (s.legalId) byCitation.set(norm(s.legalId), s);
   }
 
-  // Node id → the diff section citation that touched it.
+  // Node id → the diff section citations that touched it (first one is
+  // the deep-link target; the full list drives rule-level impact).
   const touched = new Map<string, string>();
+  const touchedAll = new Map<string, string[]>();
+  const recordTouch = (nodeId: string, citation: string) => {
+    if (!touched.has(nodeId)) touched.set(nodeId, citation);
+    const all = touchedAll.get(nodeId);
+    if (!all) touchedAll.set(nodeId, [citation]);
+    else if (!all.includes(citation)) all.push(citation);
+  };
   // Backlog citations (encoding_backlog, no matched rule file).
   const backlog: { citation: string; heading: string | null }[] = [];
   const backlogSeen = new Set<string>();
@@ -92,7 +109,7 @@ export function billOverlay(
       for (const c of candidates) {
         const node = c ? byCitation.get(norm(c)) : undefined;
         if (node) {
-          if (!touched.has(node.id)) touched.set(node.id, sec.citation);
+          recordTouch(node.id, sec.citation);
           break;
         }
       }
@@ -104,7 +121,7 @@ export function billOverlay(
       // instead of pushing a duplicate node id.
       const node = byCitation.get(key);
       if (node) {
-        if (!touched.has(node.id)) touched.set(node.id, sec.citation);
+        recordTouch(node.id, sec.citation);
       } else if (!backlogSeen.has(key)) {
         backlogSeen.add(key);
         backlog.push({ citation: sec.citation, heading: sec.heading });
@@ -118,9 +135,11 @@ export function billOverlay(
   const edges: SectionEdge[] = [...graph.edges];
   const diffCitationById: Record<string, string> = {};
   for (const [id, cite] of touched) diffCitationById[id] = cite;
+  const diffCitationsById: Record<string, string[]> = {};
+  for (const [id, cites] of touchedAll) diffCitationsById[id] = cites;
 
   if (touched.size === 0 && backlog.length === 0) {
-    return { sections, edges, diffCitationById, billNodeId: null };
+    return { sections, edges, diffCitationById, diffCitationsById, billNodeId: null };
   }
 
   const billNodeId = bill.number;
@@ -159,9 +178,59 @@ export function billOverlay(
     });
     edges.push({ from: billNodeId, to: b.citation, type: "implements" });
     diffCitationById[b.citation] = b.citation;
+    diffCitationsById[b.citation] = [b.citation];
   }
 
-  return { sections, edges, diffCitationById, billNodeId };
+  return { sections, edges, diffCitationById, diffCitationsById, billNodeId };
+}
+
+// ─── Rule-level impact ──────────────────────────────────────────────
+// A touched node is a whole rulespec FILE; the bill usually amends one
+// subsection of it. Rules carry per-subsection `source` citations, so
+// we can split the file's rules into the code the bill DIRECTLY
+// invalidates vs. the rest — and the graph's `via` edge labels then
+// separate upstream consumers of the amended rules from everything else.
+
+const normCite = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+
+/** Do two legal citations cover overlapping text? True when equal, or
+ *  when one addresses a subdivision of the other — "26 USC 25E" covers
+ *  "26 USC 25E(g)"; "7 CFR 273.3" covers "7 CFR 273.3(a)". Sibling
+ *  subdivisions ("25E(a)" vs "25E(g)") do not intersect. */
+export function citationsIntersect(a: string, b: string): boolean {
+  const x = normCite(a);
+  const y = normCite(b);
+  if (!x || !y) return false;
+  return (
+    x === y ||
+    x.startsWith(`${y}(`) ||
+    y.startsWith(`${x}(`) ||
+    x.startsWith(`${y}.`) ||
+    y.startsWith(`${x}.`)
+  );
+}
+
+/** Split a section's rules into those whose source citations intersect
+ *  any of the bill's amended citations for this node (directly
+ *  invalidated code) and the rest of the file. Rules with no source at
+ *  all are kept in `other` — no evidence either way. */
+export function splitRulesByBillImpact(
+  rules: RuleSummary[],
+  amendedCitations: string[],
+): { direct: RuleSummary[]; other: RuleSummary[] } {
+  const direct: RuleSummary[] = [];
+  const other: RuleSummary[] = [];
+  for (const rule of rules) {
+    const sources = (rule.source ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const hit = sources.some((src) =>
+      amendedCitations.some((cite) => citationsIntersect(src, cite)),
+    );
+    (hit ? direct : other).push(rule);
+  }
+  return { direct, other };
 }
 
 // The Medicaid-scale reference app rendered whole-program graphs of a

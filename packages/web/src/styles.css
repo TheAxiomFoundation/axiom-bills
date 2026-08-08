@@ -2092,6 +2092,70 @@ table.bills td a:hover { color: var(--color-accent); }
   max-height: 260px;
   overflow-y: auto;
 }
+/* Rules whose source citation the bill's amendment covers — the code
+   the bill directly invalidates, set apart from the rest of the file. */
+.impact-detail-block-title--direct {
+  color: var(--color-accent-hover);
+}
+.impact-rule-list li.impact-rule--direct {
+  border-color: rgba(146, 64, 14, 0.55);
+  background: var(--color-accent-light);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* Neighbor lists: upstream consumers vs. dependencies. */
+.impact-neighbor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.impact-neighbor-list li {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper);
+}
+.impact-neighbor-list button {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+.impact-neighbor-list button:hover code {
+  text-decoration: underline;
+}
+.impact-neighbor-list code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+.impact-neighbor-label {
+  color: var(--color-ink-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.impact-via {
+  font-size: 10.5px;
+  color: var(--color-ink-muted);
+}
+.impact-via code {
+  font-size: 10px;
+}
+.impact-via--amended {
+  color: var(--color-accent-hover);
+  font-weight: 600;
+}
 .impact-rule-list li {
   display: grid;
   gap: 3px;
