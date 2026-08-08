@@ -751,22 +751,26 @@ def sync(db_path: str) -> dict[str, int]:
         remote_queue = _remote_rows_by_in(
             client,
             "encode_queue",
-            select="id,bill_id,citation,reason",
+            select="id,bill_id,citation,reason,status",
             column="bill_id",
             values=(r["bill_id"] for r in queue_rows),
         )
         remote_by_key = {
-            (q["bill_id"], q["citation"], q["reason"]): q["id"]
+            (q["bill_id"], q["citation"], q["reason"]): q
             for q in remote_queue
         }
         push_rows = []
         for r in queue_rows:
-            remote_id = remote_by_key.get(
+            remote = remote_by_key.get(
                 (r["bill_id"], r["citation"], r["reason"]))
-            if remote_id is None:
+            if remote is None:
                 push_rows.append(r)
-            elif r["status"] != "pending":
-                r["id"] = remote_id
+            elif r["status"] != "pending" and remote["status"] != "dismissed":
+                # A local --run outcome updates the remote row — unless a
+                # human dismissed it there in the meantime: dismissed is
+                # terminal and must never be overwritten, per the queue's
+                # enqueue-once contract.
+                r["id"] = remote["id"]
                 push_rows.append(r)
         counts["encode_queue"] = _upsert(
             client, "encode_queue", push_rows,
@@ -841,6 +845,8 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if r["proposed_by"] == "llm" and r["patched_yaml"]
         }
 
+        from .variants import SUPERSEDED_MARKER
+
         for row in pending:
             remote = remote_by_key.get(
                 (bill_id_map[row["bill_id"]], row["file_path"])
@@ -848,6 +854,28 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if remote is None:
                 continue
             if remote["source_ops_fingerprint"] != row["source_ops_fingerprint"]:
+                # A prior LLM proposal exists remotely but the bill's
+                # inputs changed. Stamp the local row so the encode
+                # queue's stale_variant scan can see the supersede on a
+                # fresh CI database (where variants._upsert_variant's
+                # own supersede branch never fires — there is no prior
+                # local row to supersede).
+                stale = (f"{SUPERSEDED_MARKER} "
+                         f"{remote['proposed_model'] or 'LLM'} proposal: "
+                         "bill amendments or baseline changed since it "
+                         "was drafted.")
+                local.execute(
+                    """
+                    UPDATE rule_variants
+                       SET note = CASE
+                             WHEN note IS NULL OR note = '' THEN ?
+                             ELSE note || '; ' || ?
+                           END
+                     WHERE id = ?
+                       AND (note IS NULL OR note NOT LIKE ?)
+                    """,
+                    (stale, stale, row["id"], f"%{SUPERSEDED_MARKER}%"),
+                )
                 counts["stale_remote"] += 1
                 continue
             local.execute(
@@ -921,7 +949,8 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
         session_rows = local.execute(
             "SELECT id, jurisdiction, name FROM sessions"
         ).fetchall()
-        session_id_map = _remote_session_ids(client, session_rows)
+        session_id_map, known_remote_sessions = _remote_session_ids(
+            client, session_rows)
         bill_lookup_rows = list({
             row["id"]: {
                 "id": row["id"],
@@ -932,7 +961,8 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
             }
             for row, _, _ in pending
         }.values())
-        bill_id_map = _remote_bill_ids(client, bill_lookup_rows)
+        bill_id_map = _remote_bill_ids(client, bill_lookup_rows,
+                                       known_remote_sessions)
 
         remote_rows = _remote_rows_by_in(
             client,

@@ -29,6 +29,13 @@ from .db import DEFAULT_DB
 from .reencoder import Atom, Op, Tier, _classify_op, reencode_rule_file
 
 
+# Marker prefixing every "this proposal was superseded" note. Written
+# here and by supabase_sync.hydrate_llm_proposals, and matched by
+# encode_queue's stale_variant scan — keep the three in sync via this
+# constant, never a bare string.
+SUPERSEDED_MARKER = "Superseded"
+
+
 def _needs_review_tier(ops: list[Op]) -> Tier:
     """Tier for a variant driven by unapplied instructions.
 
@@ -328,8 +335,9 @@ def _upsert_variant(conn: sqlite3.Connection, bill_id: str, encoding_id: str,
             return "unchanged"
         superseded_llm = row["proposed_by"] == "llm"
         if superseded_llm:
-            stale = (f"Superseded {row['proposed_model'] or 'LLM'} proposal: "
-                     "bill amendments or baseline changed since it was drafted.")
+            stale = (f"{SUPERSEDED_MARKER} {row['proposed_model'] or 'LLM'} "
+                     "proposal: bill amendments or baseline changed since "
+                     "it was drafted.")
             note = f"{note}; {stale}" if note else stale
         conn.execute(
             """

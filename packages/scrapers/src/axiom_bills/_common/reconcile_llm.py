@@ -562,16 +562,44 @@ single most important divergence."""
 
 def candidate_sections(diffs: dict | None) -> list[dict]:
     """Sections worth reconciling: an encoded file matched AND at least
-    one applied/unapplied amendment op."""
-    out: list[dict] = []
+    one applied/unapplied amendment op.
+
+    Bills sometimes amend the same target citation from several bill
+    sections, but stored verdicts are keyed UNIQUE(bill_id,
+    section_citation) — so same-citation sections are merged into one
+    candidate here. The first section supplies texts and encoding;
+    later sections' ops are carried as unapplied (their edits are not
+    reflected in the first section's applied text, and the analyst
+    prompts already explain that unapplied instructions still amend the
+    law), so both the fingerprint and the prompts cover the bill's
+    whole effect on the citation.
+    """
+    merged: dict[str, dict] = {}
+    order: list[str] = []
     for section in (diffs or {}).get("sections", []):
-        has_ops = bool(
-            (section.get("applied_ops") or [])
-            + (section.get("unapplied_ops") or [])
-        )
-        if section.get("encoding") and has_ops:
-            out.append(section)
-    return out
+        applied = section.get("applied_ops") or []
+        unapplied = section.get("unapplied_ops") or []
+        if not (section.get("encoding") and (applied or unapplied)):
+            continue
+        citation = section["citation"]
+        base = merged.get(citation)
+        if base is None:
+            base = dict(section)
+            base["applied_ops"] = list(applied)
+            base["unapplied_ops"] = list(unapplied)
+            merged[citation] = base
+            order.append(citation)
+            continue
+        for op in applied:
+            moved = dict(op)
+            moved.setdefault(
+                "note",
+                "applied in another section of the bill; the amended "
+                "text shown reflects only the first section's edits",
+            )
+            base["unapplied_ops"].append(moved)
+        base["unapplied_ops"].extend(dict(op) for op in unapplied)
+    return [merged[c] for c in order]
 
 
 def _sha_or_none(text: str | None) -> str | None:
@@ -708,19 +736,23 @@ def reconcile_for_bill(conn: sqlite3.Connection, bill_id: str, *,
                       f"for {bill_number} @ {citation} — recording nothing.",
                       file=sys.stderr, flush=True)
                 counts["failed"] += 1
-                continue
+            else:
+                payload = {
+                    "topic": section.get("heading") or citation,
+                    "section": citation,
+                    "billVsLaw": bill_verdict,
+                    "modelVsLaw": model_verdict,
+                }
+                _upsert_reconciliation(conn, bill_id, citation, payload,
+                                       fingerprint, used_model)
+                counts["analyzed"] += 1
 
-            payload = {
-                "topic": section.get("heading") or citation,
-                "section": citation,
-                "billVsLaw": bill_verdict,
-                "modelVsLaw": model_verdict,
-            }
-            _upsert_reconciliation(conn, bill_id, citation, payload,
-                                   fingerprint, used_model)
-            counts["analyzed"] += 1
-
-        done = counts["analyzed"] + counts.get("would_analyze", 0)
+        # Failed sections count toward the limit too: a persistent
+        # verdict failure must not turn the cap into an unbounded walk
+        # of every candidate section (each failure still spends up to
+        # attempts × max_turns API calls).
+        done = (counts["analyzed"] + counts["failed"]
+                + counts.get("would_analyze", 0))
         if limit is not None and done >= limit:
             break
 
@@ -770,7 +802,8 @@ def reconcile_all(db_path: str = DEFAULT_DB, *,
         for k, v in counts.items():
             totals[k] = totals.get(k, 0) + v
         if limit is not None:
-            done = totals.get("analyzed", 0) + totals.get("would_analyze", 0)
+            done = (totals.get("analyzed", 0) + totals.get("failed", 0)
+                    + totals.get("would_analyze", 0))
             remaining = max(0, limit - done)
             if remaining == 0:
                 break

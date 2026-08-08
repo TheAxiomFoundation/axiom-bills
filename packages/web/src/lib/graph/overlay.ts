@@ -98,7 +98,14 @@ export function billOverlay(
       }
     } else if (sec.encoding_backlog) {
       const key = norm(sec.citation);
-      if (!backlogSeen.has(key)) {
+      // Snapshot-skew guard: diffs and the graph come from separate
+      // hourly jobs, so a citation flagged as backlog may already exist
+      // in a fresher graph snapshot. Treat it as a touched section
+      // instead of pushing a duplicate node id.
+      const node = byCitation.get(key);
+      if (node) {
+        if (!touched.has(node.id)) touched.set(node.id, sec.citation);
+      } else if (!backlogSeen.has(key)) {
         backlogSeen.add(key);
         backlog.push({ citation: sec.citation, heading: sec.heading });
       }

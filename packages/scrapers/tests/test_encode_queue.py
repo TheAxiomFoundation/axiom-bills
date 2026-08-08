@@ -275,6 +275,11 @@ def fake_popen(monkeypatch):
     FakePopen.returncode_next = 0
     FakePopen.stderr_next = ""
     monkeypatch.setattr(encode_queue.subprocess, "Popen", FakePopen)
+    # The runner preflights the binary; pretend it is installed.
+    monkeypatch.setattr(
+        encode_queue.shutil, "which",
+        lambda name: "/usr/local/bin/axiom-encode",
+    )
     return FakePopen
 
 
@@ -290,6 +295,18 @@ def test_run_requires_env_vars_before_running_anything(db_path, fake_popen,
     with pytest.raises(RuntimeError, match="AXIOM_RULES_ENGINE_PATH"):
         run_pending(db_path, env=incomplete)
     assert fake_popen.calls == []  # nothing ran
+    assert all(r["status"] == "pending" for r in _queue_rows(db_path))
+
+
+def test_run_requires_encoder_binary_before_running_anything(
+        db_path, fake_popen, tmp_path, monkeypatch):
+    """A machine without axiom-encode on PATH fails up front, before the
+    first invocation — not with a traceback mid-queue."""
+    enqueue_scan(db_path)
+    monkeypatch.setattr(encode_queue.shutil, "which", lambda name: None)
+    with pytest.raises(RuntimeError, match="axiom-encode"):
+        run_pending(db_path, env=_run_env(tmp_path))
+    assert fake_popen.calls == []
     assert all(r["status"] == "pending" for r in _queue_rows(db_path))
 
 

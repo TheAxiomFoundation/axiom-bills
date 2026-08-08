@@ -222,6 +222,26 @@ describe("billOverlay", () => {
     });
   });
 
+  it("treats a backlog citation already present in the graph as touched, never a duplicate node", () => {
+    // Snapshot skew: the graph job encoded "26 USC 152" after the
+    // bill's diffs were computed with encoding_backlog still set.
+    const diffs: BillDiffs = {
+      sections: [
+        diffSection({ citation: "26 USC 152", encoding_backlog: true }),
+      ],
+    };
+    const out = billOverlay(GRAPH, diffs, BILL);
+    const ids = out.sections.map((s) => s.id);
+    expect(new Set(ids).size).toBe(ids.length); // no duplicate node ids
+    expect(out.sections.filter((s) => s.layer === "placeholder")).toHaveLength(0);
+    const node = out.sections.find((s) => s.id === "26 USC 152");
+    expect(node?.layer).toBe("bill");
+    expect(out.edges).toContainEqual({
+      from: "HR 1234", to: "26 USC 152", type: "implements",
+    });
+    expect(out.diffCitationById["26 USC 152"]).toBe("26 USC 152");
+  });
+
   it("creates a bill node for a backlog-only bill (needs_new_encoding, no matches)", () => {
     const diffs: BillDiffs = {
       sections: [

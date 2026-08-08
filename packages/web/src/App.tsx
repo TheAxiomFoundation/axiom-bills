@@ -10,8 +10,12 @@ export function App() {
             className="brand"
             aria-label="Axiom Foundation"
           >
-            {/* Settled brand lockup (w350, outlined paths) — never a live-font wordmark. */}
-            <img src="/axiom-foundation.svg" alt="Axiom Foundation" />
+            {/* Settled brand lockup (w350, outlined paths) — never a live-font wordmark.
+                BASE_URL-relative: the app deploys under axiom.org/bills. */}
+            <img
+              src={`${import.meta.env.BASE_URL}axiom-foundation.svg`}
+              alt="Axiom Foundation"
+            />
           </a>
           <Link to="/" className="brand-title">
             <span className="brand-name">Bills</span>

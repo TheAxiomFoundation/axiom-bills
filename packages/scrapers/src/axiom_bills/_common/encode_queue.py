@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -46,6 +47,7 @@ from collections import deque
 from pathlib import Path
 
 from .db import DEFAULT_DB
+from .variants import SUPERSEDED_MARKER
 
 
 REASON_NEEDS_NEW_ENCODING = "needs_new_encoding"
@@ -124,9 +126,11 @@ def _candidates_stale_variants(
 ) -> list[tuple[str, str, str]]:
     """(bill_id, citation, reason) for variants whose LLM proposal was
     superseded by a fingerprint change (precompute-variants clears the
-    patched_yaml and appends a "Superseded …" note)."""
-    where = ["v.note LIKE '%Superseded%'"]
-    params: list = []
+    patched_yaml and appends a superseded note; on a fresh CI database
+    hydrate-variants stamps the same marker when a remote proposal's
+    fingerprint no longer matches)."""
+    where = ["v.note LIKE ?"]
+    params: list = [f"%{SUPERSEDED_MARKER}%"]
     if jurisdiction:
         where.append("b.jurisdiction = ?")
         params.append(jurisdiction)
@@ -259,10 +263,15 @@ def _run_encoder(cmd: list[str], *, tail_lines: int = 20) -> tuple[int, str]:
     Returns (exit_code, stderr_tail). Output is echoed as it arrives so
     a local user watches encoder progress instead of a silent hang.
     """
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, bufsize=1,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+        )
+    except OSError as exc:
+        # Launch failure (binary vanished mid-queue, permissions):
+        # stamp the row failed rather than crashing the whole run.
+        return 127, f"failed to launch {cmd[0]}: {exc}"
     stderr_tail: deque = deque(maxlen=tail_lines)
     threads = [
         threading.Thread(target=_pump,
@@ -298,6 +307,11 @@ def run_pending(db_path: str = DEFAULT_DB, *,
             "at an axiom-corpus clone, AXIOM_POLICY_REPO_PATH at the "
             "rulespec clone, and AXIOM_RULES_ENGINE_PATH at an "
             "axiom-rules-engine clone."
+        )
+    if shutil.which("axiom-encode") is None:
+        raise RuntimeError(
+            "trigger-encodes --run needs the `axiom-encode` CLI on PATH "
+            "(install the encoder toolchain or activate its venv)."
         )
     output_root = Path(env.get("AXIOM_ENCODE_OUTPUT") or DEFAULT_OUTPUT_ROOT)
 

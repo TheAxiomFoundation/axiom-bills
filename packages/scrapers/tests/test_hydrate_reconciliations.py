@@ -93,13 +93,22 @@ class _FakeClientCM:
 
 def _patch_remote(monkeypatch, remote_rows: list[dict]) -> None:
     monkeypatch.setattr(supabase_sync, "_client", lambda: _FakeClientCM())
+    # Mirror the REAL signatures: _remote_session_ids returns
+    # (mapping, known_remote_sessions) and _remote_bill_ids requires the
+    # known-sessions set — a looser mock here previously hid a
+    # tuple-treated-as-dict crash in hydrate_reconciliations.
     monkeypatch.setattr(
         supabase_sync, "_remote_session_ids",
-        lambda client, rows: {r["id"]: f"remote-{r['id']}" for r in rows},
+        lambda client, rows: (
+            {r["id"]: f"remote-{r['id']}" for r in rows},
+            {f"remote-{r['id']}" for r in rows},
+        ),
     )
     monkeypatch.setattr(
         supabase_sync, "_remote_bill_ids",
-        lambda client, rows: {r["id"]: f"remote-{r['id']}" for r in rows},
+        lambda client, rows, known_remote_sessions: {
+            r["id"]: f"remote-{r['id']}" for r in rows
+        },
     )
     monkeypatch.setattr(
         supabase_sync, "_remote_rows_by_in",

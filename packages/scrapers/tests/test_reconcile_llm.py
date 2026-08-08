@@ -260,6 +260,31 @@ def test_candidate_sections_accept_unapplied_only():
     assert candidate_sections({"sections": [section]}) == [section]
 
 
+def test_candidate_sections_merge_same_citation():
+    """Two bill sections amending the same target citation collapse to
+    one candidate — otherwise they fight over the UNIQUE(bill_id,
+    section_citation) row and re-analyze each other forever."""
+    first = _encoded_section()
+    second = _encoded_section(applied_ops=[{
+        "kind": "strike-insert", "target": "26 USC 32(a)",
+        "needle": "taxable year", "payload": "calendar year",
+    }])
+    merged = candidate_sections({"sections": [first, second]})
+    assert len(merged) == 1
+    m = merged[0]
+    # First section supplies texts + applied ops; the second section's
+    # applied op is carried as unapplied (its edit is not reflected in
+    # the first section's applied text) with an explanatory note.
+    assert m["applied_ops"] == first["applied_ops"]
+    assert [op["needle"] for op in m["unapplied_ops"]] == ["taxable year"]
+    assert m["unapplied_ops"][0]["note"]
+    # The merged fingerprint covers both sections' ops, and merging is
+    # deterministic across runs.
+    assert section_fingerprint(m) != section_fingerprint(first)
+    again = candidate_sections({"sections": [first, second]})
+    assert section_fingerprint(again[0]) == section_fingerprint(m)
+
+
 def test_dry_run_selects_only_qualifying_bills(db_path):
     with sqlite3.connect(db_path) as raw:
         # A bill whose only section has no encoding: never selected.
@@ -393,4 +418,25 @@ def test_limit_caps_analyzed_sections(conn):
     fake = FakeClient([_verdict_resp(VALID_VERDICT)] * 2)
     counts = reconcile_for_bill(conn, "b1", limit=1, get_client=lambda: fake)
     assert counts["analyzed"] == 1
+    assert len(fake.calls) == 2
+
+
+def test_limit_counts_failed_sections_too(conn):
+    """A persistent verdict failure must consume the cap, not walk every
+    remaining candidate — otherwise an API/model regression makes the
+    hourly spend unbounded despite --limit."""
+    two_sections = [
+        _encoded_section(),
+        _encoded_section(citation="26 USC 32(b)"),
+    ]
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (_diffs(two_sections),))
+    # Every response is empty (no tool use): each analyst attempt gives
+    # up immediately, so section 1 fails after 2 calls (2 attempts of
+    # the billVsLaw analyst; modelVsLaw never runs).
+    fake = FakeClient([_Resp([])], repeat_last=True)
+    counts = reconcile_for_bill(conn, "b1", limit=1, get_client=lambda: fake)
+    assert counts["failed"] == 1
+    assert counts["analyzed"] == 0
+    # Section 2 was never attempted: the failure consumed the limit.
     assert len(fake.calls) == 2
