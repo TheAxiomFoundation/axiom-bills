@@ -131,7 +131,8 @@ a:hover { color: var(--color-accent-hover); }
   align-items: center;
   color: var(--color-ink);
 }
-/* Settled Axiom Foundation lockup (outlined-path SVG). */
+/* Settled Axiom Foundation lockup (outlined-path SVG). The uniform demo
+   header renders the product name via .brand-title, not a ::after tag. */
 .brand img {
   display: block;
   width: 100px;
