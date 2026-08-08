@@ -163,3 +163,128 @@ def test_rules_and_atoms_refresh_without_duplicates(db_path, repo):
     conn.close()
     assert n_rules == 1
     assert n_atoms == 1
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Atom quote formats: source.text (legacy) vs source.excerpt (current)
+# ────────────────────────────────────────────────────────────────────
+
+# Mirrors the shapes in today's rulespec-us — notably the 25E(g)
+# termination-clause atom, whose verbatim quote lives under
+# source.excerpt. The indexer used to read only source.text, silently
+# dropping every excerpt-format atom and blinding the bill-overlap
+# match for newer files.
+ATOM_FORMATS_YAML = dedent("""\
+    format: rulespec/v1
+    module:
+      source_verification:
+        corpus_citation_path: us/statute/26/25E
+    rules:
+      - name: credit_allowed
+        kind: derived
+        source: 26 USC 25E(a), 26 USC 25E(g)
+        metadata:
+          proof:
+            atoms:
+              - path: versions[0].formula
+                kind: exception
+                source:
+                  corpus_citation_path: us/statute/26/25E
+                  excerpt: >-
+                    No credit shall be allowed ... with respect to any
+                    vehicle acquired after September 30, 2025
+              - path: versions[0].formula
+                kind: amount
+                source:
+                  text: "$4,000"
+              - path: versions[0].formula
+                kind: amount
+                source:
+                  text: "text wins"
+                  excerpt: "excerpt ignored when text present"
+              - path: versions[0].formula
+                kind: import
+                import:
+                  target: us:statutes/26/25E#tentative_credit
+              - path: versions[0].formula
+                kind: pointer
+                source:
+                  corpus_citation_path: us/statute/26/25E
+""")
+
+
+def _atom_rows(db_path) -> list[sqlite3.Row]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT atom_kind, text, corpus_citation_path"
+        "  FROM encoded_rule_atoms ORDER BY atom_kind, text"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def test_atoms_index_both_text_and_excerpt_formats(db_path, tmp_path):
+    repo = tmp_path / "rulespec-atoms"
+    (repo / "statutes" / "26").mkdir(parents=True)
+    (repo / "statutes" / "26" / "25E.yaml").write_text(ATOM_FORMATS_YAML)
+    counts = index_repo(repo, jurisdiction="us", repo_name="rulespec-us",
+                        db_path=db_path)
+    # 3 quote-bearing atoms indexed; import + bare pointer skipped.
+    assert counts["atoms"] == 3
+    rows = _atom_rows(db_path)
+    by_kind = {}
+    for r in rows:
+        by_kind.setdefault(r["atom_kind"], []).append(r)
+
+    # excerpt-format atom (the 25E(g) termination clause) is indexed
+    # with the quote as its text, ready for bill-overlap matching.
+    [exc] = by_kind["exception"]
+    assert "after September 30, 2025" in exc["text"]
+    assert exc["corpus_citation_path"] == "us/statute/26/25E"
+
+    amounts = {r["text"] for r in by_kind["amount"]}
+    # legacy text-format atom still indexed, and it inherits the
+    # module's corpus path when the atom names none.
+    assert "$4,000" in amounts
+    legacy = [r for r in by_kind["amount"] if r["text"] == "$4,000"][0]
+    assert legacy["corpus_citation_path"] == "us/statute/26/25E"
+    # when both keys are present, text wins.
+    assert "text wins" in amounts
+    assert "excerpt ignored when text present" not in amounts
+
+    # atoms with no quote at all never produce rows.
+    assert "import" not in by_kind
+    assert "pointer" not in by_kind
+
+
+def test_excerpt_atoms_survive_reindex_without_duplicates(db_path, tmp_path):
+    repo = tmp_path / "rulespec-atoms"
+    (repo / "statutes" / "26").mkdir(parents=True)
+    (repo / "statutes" / "26" / "25E.yaml").write_text(ATOM_FORMATS_YAML)
+    index_repo(repo, jurisdiction="us", repo_name="rulespec-us", db_path=db_path)
+    index_repo(repo, jurisdiction="us", repo_name="rulespec-us", db_path=db_path)
+    assert len(_atom_rows(db_path)) == 3
+
+
+def test_excerpt_atoms_reach_variants_overlap_loader(db_path, tmp_path):
+    """Cross-module flow: the excerpt-format quote must come back out of
+    variants._load_atoms — that's the text the reencoder matches bill
+    amendments against."""
+    from axiom_bills._common.variants import _load_atoms
+
+    repo = tmp_path / "rulespec-atoms"
+    (repo / "statutes" / "26").mkdir(parents=True)
+    (repo / "statutes" / "26" / "25E.yaml").write_text(ATOM_FORMATS_YAML)
+    index_repo(repo, jurisdiction="us", repo_name="rulespec-us", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    enc_id = conn.execute(
+        "SELECT id FROM axiom_encodings WHERE file_path='statutes/26/25E.yaml'"
+    ).fetchone()["id"]
+    atoms = _load_atoms(conn, enc_id)
+    conn.close()
+    texts = {a.text for a in atoms}
+    assert any("after September 30, 2025" in t for t in texts)
+    assert all(a.text for a in atoms)  # no empty overlap atoms
