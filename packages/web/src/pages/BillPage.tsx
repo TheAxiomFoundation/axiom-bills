@@ -176,7 +176,7 @@ function BillImpactSection({
   return (
     <section className="impact">
       <div className="bill-text-header">
-        <h3>Impact</h3>
+        <h3>Impact on the encoded model</h3>
         {queuedCount > 0 && (
           <span
             className="chip encode-queue-chip"
@@ -190,9 +190,23 @@ function BillImpactSection({
           onClick={() => setOpen((x) => !x)}
           aria-expanded={open}
         >
-          {open ? "Hide" : "Show"} graph
+          {open ? "Hide" : "Show"} impact graph
         </button>
       </div>
+      {!open && bill.matched_encodings.length > 0 ? (
+        // Discoverability: say what's inside before the section is
+        // expanded, so the collapsed header isn't a mystery box.
+        <p className="hint impact-teaser">
+          {bill.number} amends {bill.matched_encodings.length} encoded rule
+          file{bill.matched_encodings.length === 1 ? "" : "s"} (
+          {bill.matched_encodings
+            .slice(0, 3)
+            .map((e) => e.citation)
+            .join(", ")}
+          {bill.matched_encodings.length > 3 ? ", …" : ""}
+          ) — the graph shows where they sit in the encoded model.
+        </p>
+      ) : null}
       {open && (
         err ? (
           <p className="error">Couldn’t load this bill’s section diffs.</p>

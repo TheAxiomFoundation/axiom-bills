@@ -1614,6 +1614,141 @@ table.bills td a:hover { color: var(--color-accent); }
   white-space: pre-wrap; word-break: break-word;
   font-family: "SF Mono", monospace; color: #1c1917;
 }
+/* Card rendering of the touched rules — replaces the raw-YAML dump in
+   the ~280px rail. Everything stacks vertically and wraps. */
+.rs-rule-cards {
+  display: grid;
+  gap: 8px;
+  background: #fdfcf7;
+  border: 1px solid #d8d4c8;
+  border-top: none;
+  padding: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.rs-rule-card {
+  background: #fff;
+  border: 1px solid #d8d4c8;
+  border-radius: 4px;
+  padding: 9px 10px;
+  display: grid;
+  gap: 7px;
+}
+.rs-rule-card-head {
+  display: grid;
+  gap: 4px;
+}
+.rs-rule-card-name {
+  font-family: "SF Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1c1917;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.rs-rule-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.rs-rule-card-chip {
+  border: 1px solid #d8d4c8;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-style: normal;
+  color: #78716c;
+}
+.rs-rule-card-source {
+  margin: 0;
+  font-size: 11px;
+  color: #78716c;
+}
+.rs-rule-card-source code {
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.rs-atom-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.rs-atom {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border-left: 2px solid #d8d4c8;
+  background: #fdfcf7;
+}
+.rs-atom blockquote {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #44403c;
+  font-style: italic;
+}
+.rs-atom-kind {
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+.rs-atom--import {
+  border-left-color: #a8a29e;
+}
+.rs-atom--import code {
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+/* The bill's op strikes text inside this quote — the exact affected code. */
+.rs-atom--struck {
+  border-left-color: #92400e;
+  background: #fef3e2;
+}
+.rs-atom--struck .rs-atom-kind {
+  color: #92400e;
+}
+.rs-atom-struck-note {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #92400e;
+}
+.rs-rule-formula {
+  display: grid;
+  gap: 3px;
+}
+.rs-rule-formula-label {
+  margin: 0;
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+.rs-rule-formula pre {
+  margin: 0;
+  padding: 8px;
+  background: #1c1917;
+  color: #e7e5e4;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.impact-teaser {
+  margin: 4px 0 0;
+}
+
 .rs-variant-todo {
   background: #fdfcf7; border: 1px solid #d8d4c8; border-top: none;
   padding: 10px 12px;

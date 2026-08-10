@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react";
-import { api, type BillDiffSection, type BillDiffs as TDiffs, type RuleVariant } from "../lib/api";
+import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  api,
+  type AmendmentOp,
+  type BillDiffSection,
+  type BillDiffs as TDiffs,
+  type RuleVariant,
+} from "../lib/api";
 import { clean, parseScalarNote } from "../lib/variant-text";
 import { sliceRulesBySource } from "../lib/yaml-slice";
 import { BeforeAfter } from "./BeforeAfter";
+
+// Card-based rendering of the touched rules (parses the YAML with the
+// `yaml` package — lazy so the parser stays out of the main bundle).
+const RuleSpecRules = lazy(() => import("./RuleSpecRules"));
 
 export function BillDiffs({ billId }: { billId: string }) {
   const [data, setData] = useState<TDiffs | null>(null);
@@ -166,6 +176,7 @@ function OrphanVariantsSection({ variants }: { variants: RuleVariant[] }) {
               <RuleSpecVariantTabs
                 variant={v}
                 sectionCitation={v.encoding?.citation ?? v.file_path}
+                ops={[]}
               />
             </div>
           </aside>
@@ -335,7 +346,11 @@ function RuleSpecPanel({ section, variants }: {
         <dt>Matches</dt><dd><code>{enc.citation}</code></dd>
       </dl>
       {variant ? (
-        <RuleSpecVariantTabs variant={variant} sectionCitation={section.citation} />
+        <RuleSpecVariantTabs
+          variant={variant}
+          sectionCitation={section.citation}
+          ops={[...section.applied_ops, ...section.unapplied_ops]}
+        />
       ) : (
         <p className="rulespec-hint">
           If this bill is enacted, Pipeline B will re-run the encoder
@@ -346,9 +361,10 @@ function RuleSpecPanel({ section, variants }: {
   );
 }
 
-function RuleSpecVariantTabs({ variant, sectionCitation }: {
+function RuleSpecVariantTabs({ variant, sectionCitation, ops }: {
   variant: RuleVariant;
   sectionCitation: string;
+  ops: AmendmentOp[];
 }) {
   const [tab, setTab] = useState<"current" | "enacted">("current");
   const [showFull, setShowFull] = useState(false);
@@ -357,7 +373,6 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
   const baseline = variant.baseline_yaml ?? "";
   const patched = variant.patched_yaml ?? "";
   const baselineSliced = baseline ? sliceRulesBySource(baseline, sectionCitation) : null;
-  const patchedSliced = patched ? sliceRulesBySource(patched, sectionCitation) : null;
   const noRuleGroundsHere = baselineSliced?.fallback ?? false;
   const sliceSummary = baselineSliced && baselineSliced.shown < baselineSliced.total
     ? `${baselineSliced.shown} of this file's ${baselineSliced.total} rules ` +
@@ -385,6 +400,8 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
               ? "LLM draft"
               : variant.tier === "substitution"
               ? "auto"
+              : variant.tier === "no_op"
+              ? "no auto-change"
               : variant.tier}
           </span>
         </button>
@@ -406,7 +423,7 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
           {sliceSummary}{" "}
           <button className="rs-variant-slice-toggle"
                   onClick={() => setShowFull((x) => !x)}>
-            {showFull ? "show only affected rules" : "show full file"}
+            {showFull ? "back to affected rules" : "show raw file"}
           </button>
         </p>
       )}
@@ -418,15 +435,31 @@ function RuleSpecVariantTabs({ variant, sectionCitation }: {
         </p>
       )}
       {noRuleGroundsHere && !showFull ? null : tab === "current" ? (
-        <pre className="rs-variant-yaml">
-          {baselineSliced
-            ? (showFull ? baseline : baselineSliced.filtered)
-            : "(baseline YAML not on disk)"}
-        </pre>
+        !baseline ? (
+          <pre className="rs-variant-yaml">(baseline YAML not on disk)</pre>
+        ) : showFull ? (
+          <pre className="rs-variant-yaml">{baseline}</pre>
+        ) : (
+          <Suspense fallback={<p className="hint">Rendering rules…</p>}>
+            <RuleSpecRules
+              yamlText={baseline}
+              sectionCitation={sectionCitation}
+              ops={ops}
+            />
+          </Suspense>
+        )
       ) : hasPatched ? (
-        <pre className="rs-variant-yaml">
-          {patchedSliced ? (showFull ? patched : patchedSliced.filtered) : patched}
-        </pre>
+        showFull ? (
+          <pre className="rs-variant-yaml">{patched}</pre>
+        ) : (
+          <Suspense fallback={<p className="hint">Rendering rules…</p>}>
+            <RuleSpecRules
+              yamlText={patched}
+              sectionCitation={sectionCitation}
+              ops={ops}
+            />
+          </Suspense>
+        )
       ) : (
         <VariantTodo variant={variant} />
       )}

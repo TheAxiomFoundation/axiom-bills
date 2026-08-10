@@ -262,6 +262,15 @@ function GraphView({
         const touchesBill =
           sectionsById.get(e.from)!.layer !== "baseline" ||
           sectionsById.get(e.to)!.layer !== "baseline";
+        // The synthetic bill edges get a verb so the graph explains
+        // itself: "amends" into an existing encoding, "adds" into a
+        // not-yet-encoded placeholder.
+        const label =
+          e.type === "implements"
+            ? sectionsById.get(e.to)!.layer === "placeholder"
+              ? "adds"
+              : "amends"
+            : undefined;
         return {
           id: `${e.from}->${e.to}`,
           source: e.from,
@@ -269,6 +278,9 @@ function GraphView({
           type: "smoothstep",
           className: touchesBill ? "rsEdge-bill" : "rsEdge-baseline",
           animated: e.type === "implements",
+          label,
+          labelStyle: { fontSize: 10, fill: "var(--color-ink-muted)" },
+          labelBgStyle: { fill: "var(--color-paper)", fillOpacity: 0.85 },
           style: e.type === "reference" ? { strokeDasharray: "6 4" } : undefined,
           markerEnd: { type: MarkerType.ArrowClosed, width: 13, height: 13 },
         };
@@ -373,17 +385,23 @@ function GraphView({
   return (
     <div className="impact-graph">
       <div className="impact-graph-head">
-        <p className="hint">
-          The <code>{graph.meta.generatedFrom || "rulespec"}</code> encoding as
-          a section-level dependency graph
-          {mode !== "baseline" && overlay.billNodeId
-            ? ` — ${bill.number} touches ${touchedCount} encoded section${
-                touchedCount === 1 ? "" : "s"
-              }${backlogCount > 0 ? ` and ${backlogCount} not-yet-encoded provision${backlogCount === 1 ? "" : "s"}` : ""}.`
-            : "."}{" "}
-          Hover a section to trace its lineage; click for its rules and
-          deferred gaps.
-        </p>
+        <div className="impact-graph-intro">
+          <p className="hint">
+            Each card is one encoded rule file from{" "}
+            <code>{graph.meta.generatedFrom || "rulespec"}</code>; arrows show
+            which files' rules feed into which.
+            {mode !== "baseline" && overlay.billNodeId
+              ? ` The dark card is ${bill.number} itself — an "amends" arrow
+                 points at each encoded file it changes (${touchedCount})` +
+                (backlogCount > 0
+                  ? `, and an "adds" arrow at each dashed placeholder for a
+                     provision it creates that has no encoding yet (${backlogCount}).`
+                  : ".")
+              : ""}{" "}
+            Hover a card to trace everything upstream and downstream of it;
+            click it for its rules.
+          </p>
+        </div>
         <div className="filters" role="tablist" aria-label="Graph view">
           <button
             type="button"
