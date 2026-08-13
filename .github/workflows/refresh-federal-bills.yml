@@ -29,8 +29,6 @@ on:
         description: "Optional Congress number for targeted scrapes (bill numbers repeat across Congresses — H.R.7024 exists in the 118th and 119th as unrelated bills)."
         required: false
         type: string
-  schedule:
-    - cron: "7 * * * *"
 
 concurrency:
   group: refresh-federal-bills
