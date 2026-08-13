@@ -7,8 +7,6 @@ on:
         description: "Optional jurisdiction code to refresh, e.g. us-ny"
         required: false
         type: string
-  schedule:
-    - cron: "17 */6 * * *"
 
 concurrency:
   group: refresh-state-bills-${{ inputs.state || 'all' }}
