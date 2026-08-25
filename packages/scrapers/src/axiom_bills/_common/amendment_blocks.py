@@ -63,6 +63,12 @@ class Op:
     redesignate_to: str = ""        # for redesignate
     at_end: bool = False            # operand sits at the tail of the scope
     raw: str = ""                   # the verbatim bill substring this came from
+    # How the applier established this op's scope. Set during apply, not
+    # parse: 'corpus' = an exact corpus row addressed the target;
+    # 'sliced' = we fell back to marker heuristics over prose;
+    # 'block' = the op targets the block itself. Consumers surface
+    # 'sliced' so a heuristic scope is never mistaken for a verified one.
+    scope_source: str = ""
 
 
 @dataclass
@@ -1258,6 +1264,37 @@ def _slice_for(target: str, body: str) -> tuple[str, tuple[int, int]] | None:
     return None
 
 
+def _corpus_span(target: str, body: str,
+                 resolve_scope) -> tuple[int, int] | None:
+    """Locate `target`'s scope in `body` using corpus as the authority.
+
+    axiom-corpus stores subsections and paragraphs as their own rows
+    (`us/statute/26/63/b/6`), so the exact text of the scope is a fact we
+    can look up rather than a structure we have to re-derive from prose
+    with marker heuristics. We fetch that row and find its body inside
+    the block text.
+
+    The match must be unique: corpus text appearing twice in the parent
+    means we cannot say which copy the amendment means.
+    """
+    if resolve_scope is None:
+        return None
+    try:
+        scope_text = resolve_scope(target)
+    except Exception:
+        # A corpus outage must not silently downgrade every op to the
+        # heuristic path — but it also must not crash the run. The
+        # caller's own corpus fetch raises CorpusUnavailable first in
+        # practice; this is belt-and-braces.
+        return None
+    if not scope_text or not scope_text.strip():
+        return None
+    spans = _norm_spans(body, scope_text, bounded=False)
+    if len(spans) != 1:
+        return None
+    return spans[0]
+
+
 def _resolve_strike(op: Op, work_text: str, payload: str, *,
                     require_unique: bool = False) -> tuple[str | None, str]:
     """Locate an op's needle in `work_text` and substitute `payload`.
@@ -1299,34 +1336,66 @@ def _resolve_strike(op: Op, work_text: str, payload: str, *,
     return work_text[:start] + payload + work_text[end:], ""
 
 
-def apply_op(op: Op, body: str, block_target: str) -> tuple[str, bool, str]:
-    """Apply a single Op to ``body`` (the slice corresponding to ``block_target``).
+def apply_op(op: Op, body: str, block_target: str, *,
+             resolve_scope=None, body_is_exact: bool = True) -> tuple[str, bool, str]:
+    """Apply a single Op to ``body`` (the text covering ``block_target``).
 
     Returns (new_body, applied, note). `note` carries a short reason
     when applied=False so the UI can show "couldn't apply this op
     because needle not found" rather than dropping silently.
+
+    Scope is established corpus-first. `resolve_scope(citation) -> str |
+    None` returns the body of the EXACT corpus row for a citation (never
+    an ancestor); corpus stores subsections and paragraphs as addressable
+    rows, so for those levels the scope is a lookup rather than a guess.
+    Marker-heuristic slicing remains the fallback for subparagraph and
+    deeper, where corpus has no row — those ops are tagged
+    ``scope_source='sliced'`` so nothing downstream mistakes a heuristic
+    scope for a verified one.
+
+    `body_is_exact` says whether `body` really is `block_target`'s text.
+    When corpus only had an ancestor, an op we can't scope must NOT be
+    applied against the whole ancestor: that is how an edit aimed at
+    subsection (b) lands in subsection (a).
     """
-    # If op.target is deeper than block_target, slice the sub-scope out
-    # of body, apply, stitch back.
     sub_offsets: tuple[int, int] | None = None
     work_text = body
     scope_unresolved = False
+
     if op.target != block_target:
-        sliced = _slice_for(op.target, body)
-        if sliced is None:
-            # The slicer can't always find a paragraph marker in corpus
-            # text that stores a subsection as one flowing line. Rather
-            # than drop the op, fall back to the whole block — but
-            # demand a UNIQUE boundary-safe match, since a needle that
-            # occurs exactly once is in the named paragraph whether or
-            # not we could delimit it. Anything less stays unapplied.
-            if op.kind not in ("strike-insert", "strike"):
+        span = _corpus_span(op.target, body, resolve_scope)
+        if span is not None:
+            op.scope_source = "corpus"
+            work_text, sub_offsets = body[span[0]:span[1]], span
+        else:
+            sliced = _slice_for(op.target, body)
+            if sliced is not None:
+                op.scope_source = "sliced"
+                work_text, sub_offsets = sliced
+            elif op.kind not in ("strike-insert", "strike"):
                 return body, False, (
                     f"couldn't locate {op.target} within {block_target}"
                 )
-            scope_unresolved = True
-        else:
-            work_text, sub_offsets = sliced
+            else:
+                # Neither corpus nor the slicer could delimit the scope.
+                # Fall back to the whole block, but demand a UNIQUE
+                # boundary-safe match: a needle occurring exactly once is
+                # in the named scope whether or not we could bound it.
+                op.scope_source = "unscoped"
+                scope_unresolved = True
+    else:
+        op.scope_source = "block" if body_is_exact else "ancestor"
+        if not body_is_exact:
+            # `body` is a wider section corpus fell back to, and neither
+            # corpus nor the slicer could find this block's own text
+            # inside it. A unique match is NOT enough here: the one
+            # occurrence may sit in a sibling subsection the bill never
+            # mentioned, and we have no way to tell. Decline.
+            return body, False, (
+                f"corpus has no row for {block_target} and its text could "
+                f"not be located in the enclosing section — refusing to "
+                f"apply {op.kind} against a scope we cannot delimit"
+            )
 
     if op.kind in ("strike-insert", "strike"):
         payload = op.payload if op.kind == "strike-insert" else ""
@@ -1382,12 +1451,23 @@ class AppliedBlock:
 
 
 def apply_block(block: AmendmentBlock, corpus_body: str,
-                slice_for_target) -> AppliedBlock:
+                slice_for_target, *, resolve_scope=None,
+                body_is_exact: bool = True) -> AppliedBlock:
     """Apply an AmendmentBlock to a corpus body.
 
     `slice_for_target` is injected so this module doesn't import
     `amendments.py` directly (avoids cycles in some call paths). Caller
     passes a function `(body, citation) -> (slice_text, (start, end))`.
+
+    `resolve_scope(citation) -> str | None` should return the body of the
+    EXACT corpus row for that citation (None when corpus has no such
+    row). Supplying it lets the applier address subsections and
+    paragraphs by corpus path instead of re-deriving them from prose.
+
+    `body_is_exact` tells the applier whether `corpus_body` is genuinely
+    `block.target`'s text or an ancestor corpus fell back to. See
+    `apply_op` — the distinction decides whether an unscoped op may be
+    applied at all.
     """
     out = AppliedBlock(
         target=block.target,
@@ -1396,21 +1476,42 @@ def apply_block(block: AmendmentBlock, corpus_body: str,
         after_text=None,
     )
 
-    # Slice the block's target out of the corpus body.
-    sliced = slice_for_target(corpus_body, block.target)
-    if sliced and sliced[0]:
-        block_slice, block_offsets = sliced
-        out.before_text = block_slice
-    else:
-        # Block target is exactly the corpus row, OR slicer couldn't
-        # locate. Use the full body as our working scope.
+    # Narrow to the block's own target. When corpus already handed us
+    # that exact row there is nothing to narrow; otherwise try corpus
+    # for the row, then the marker heuristics.
+    block_scope_exact = body_is_exact
+    if body_is_exact:
         block_slice = corpus_body
-        block_offsets = (0, len(corpus_body))
-        out.before_text = corpus_body
+    else:
+        span = _corpus_span(block.target, corpus_body, resolve_scope)
+        if span is not None:
+            block_slice = corpus_body[span[0]:span[1]]
+            block_scope_exact = True
+        else:
+            sliced = slice_for_target(corpus_body, block.target)
+            if sliced and sliced[0]:
+                block_slice = sliced[0]
+                block_scope_exact = True
+                out.notes.append(
+                    f"scope for {block.target} came from marker heuristics, "
+                    f"not a corpus row"
+                )
+            else:
+                # No corpus row and no locatable slice: `corpus_body` is
+                # a wider section than the bill targets. Ops run against
+                # it only under the unique-match rule in apply_op.
+                block_slice = corpus_body
+                out.notes.append(
+                    f"corpus has no row for {block.target}; showing the "
+                    f"enclosing section"
+                )
+    out.before_text = block_slice
 
     current = block_slice
     for op in block.operations:
-        new_current, ok, note = apply_op(op, current, block.target)
+        new_current, ok, note = apply_op(
+            op, current, block.target,
+            resolve_scope=resolve_scope, body_is_exact=block_scope_exact)
         if ok:
             out.applied.append(op)
             current = new_current

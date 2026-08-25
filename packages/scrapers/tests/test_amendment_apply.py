@@ -192,3 +192,117 @@ def test_specific_needle_still_applies_unscoped():
     assert len(result.applied) == 1
     assert "the senior allowance" in result.after_text
     assert "the deduction for seniors" not in result.after_text
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Corpus-first scope resolution
+#
+#  axiom-corpus stores subsections and paragraphs as addressable rows
+#  (us/statute/26/63/b/6), so an op's scope is a lookup rather than a
+#  structure to re-derive from prose. Marker heuristics stay as the
+#  fallback for subparagraph and deeper, tagged so nothing downstream
+#  mistakes a heuristic scope for a verified one.
+# ────────────────────────────────────────────────────────────────────
+
+# The real corpus text of 26 USC 63(b) and its paragraph (6).
+CORPUS_63B_ROW = (
+    "In the case of an individual who does not elect to itemize his "
+    "deductions for the taxable year, for purposes of this subtitle, the "
+    "term “taxable income” means adjusted gross income, minus— the "
+    "standard deduction, the deduction for personal exemptions provided "
+    "in section 151, any deduction provided in section 199A, the "
+    "deduction provided in section 225 and, so much of the deduction "
+    "allowed by section 163(a) as does not exceed the amount."
+)
+CORPUS_63B6_ROW = "the deduction provided in section 225 and"
+
+
+def _corpus(rows):
+    return lambda citation: rows.get(citation)
+
+
+def test_scope_comes_from_the_corpus_row_when_one_exists():
+    bill = (
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``and'' at the end of "
+        "paragraph (6).\n"
+    )
+    block = parse_bill_amendments(bill)[0]
+    result = apply_block(
+        block, CORPUS_63B_ROW, _slice,
+        resolve_scope=_corpus({"26 USC 63(b)(6)": CORPUS_63B6_ROW}),
+    )
+    assert len(result.applied) == 1
+    assert result.applied[0].scope_source == "corpus"
+    assert "the standard deduction" in result.after_text
+    assert "section 225 and," not in result.after_text
+
+
+def test_corpus_scope_beats_the_marker_heuristics():
+    """Paragraph (6) is invisible to the slicer here — the markers were
+    dropped when corpus flattened the subsection to one line — but the
+    corpus row addresses it directly."""
+    block = parse_bill_amendments(
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``and'' at the end of "
+        "paragraph (6).\n"
+    )[0]
+    assert slice_subsection(CORPUS_63B_ROW, "26 USC 63(b)(6)")[0] is None
+    result = apply_block(
+        block, CORPUS_63B_ROW, _slice,
+        resolve_scope=_corpus({"26 USC 63(b)(6)": CORPUS_63B6_ROW}),
+    )
+    assert [o.scope_source for o in result.applied] == ["corpus"]
+
+
+def test_ambiguous_corpus_text_is_not_used_as_a_scope():
+    """If the corpus row's text appears twice in the parent we cannot say
+    which copy the amendment means."""
+    doubled = CORPUS_63B6_ROW + " and also " + CORPUS_63B6_ROW
+    block = parse_bill_amendments(
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``225'' at the end of "
+        "paragraph (6).\n"
+    )[0]
+    result = apply_block(
+        block, doubled, _slice,
+        resolve_scope=_corpus({"26 USC 63(b)(6)": CORPUS_63B6_ROW}),
+    )
+    # Falls through to the unscoped rule, which declines: two matches.
+    assert not result.applied
+    assert result.unapplied
+
+
+def test_deep_target_falls_back_to_slicing_and_is_flagged():
+    """Corpus has no row at subparagraph depth, so the marker heuristics
+    still run — but the op records that its scope was heuristic."""
+    block = parse_bill_amendments(
+        "Section 213(c) of the Internal Revenue Code (26 U.S.C. 213(c)) "
+        "is amended--\n"
+        "    (1) in paragraph (2), by striking ``allowable'' and "
+        "inserting ``deductible''.\n"
+    )[0]
+    result = apply_block(block, SECTION_213, _slice, resolve_scope=_corpus({}))
+    assert len(result.applied) == 1
+    assert result.applied[0].scope_source == "sliced"
+    assert "the amount paid is deductible" in result.after_text
+
+
+def test_undelimitable_ancestor_scope_is_declined():
+    """Corpus fell back to the enclosing section and the block's own text
+    can't be found in it. The needle occurs exactly once — but in a
+    sibling subsection the bill never named, so we must not apply it."""
+    enclosing = (
+        "(a) General rule. The taxpayer shall reduce the standard "
+        "deduction by such amount, as described in section 151, "
+        "(b) Special rule. No reduction applies."
+    )
+    block = parse_bill_amendments(
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``the standard "
+        "deduction'' and inserting ``the basic allowance''.\n"
+    )[0]
+    result = apply_block(block, enclosing, _slice, body_is_exact=False)
+    assert not result.applied
+    assert "cannot delimit" in result.unapplied[0][1]
+    assert result.after_text == enclosing
