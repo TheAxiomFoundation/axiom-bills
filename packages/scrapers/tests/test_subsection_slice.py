@@ -165,3 +165,113 @@ def test_flattened_subsection_yields_every_paragraph_marker():
         got, _ = slice_subsection(body, f"26 USC 63(b)({n})")
         assert got is not None, f"paragraph ({n}) not found"
         assert got.lstrip().startswith(f"({n})"), (n, got[:40])
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Structural-marker recovery
+#
+#  Four separate reasons a real marker was being read as part of a
+#  citation, and so vanishing from the structure scan. Each is a
+#  distinct shape, so each gets its own case.
+# ────────────────────────────────────────────────────────────────────
+
+def test_conjunction_before_a_marker_does_not_hide_it():
+    """Statutory lists put "and"/"or" before their final item. Treating a
+    preceding conjunction as proof of a cross-reference dropped the last
+    marker of most lists — and the chain search needs every one."""
+    body = (
+        "(c) Rules (1) may require an intermediate holding company under "
+        "subsection (b); and (2) may promulgate regulations to establish "
+        "any restrictions or limitations."
+    )
+    got, _ = slice_subsection(body, "26 USC 999(c)(2)")
+    assert got is not None
+    assert got.lstrip().startswith("(2)")
+    assert "may promulgate regulations" in got
+
+
+def test_chain_class_switch_ends_the_reference():
+    """"section 170(p), (5)" is a reference then paragraph (5); the label
+    class switches from letter to digit. Contrast the same-class list
+    below, which is one reference throughout."""
+    assert _shielded("the deduction provided in section 170(p), (5) the") \
+        == ["section 170(p)"]
+    assert _shielded("under section 1005c(a), (b), and (c) of title 7") \
+        == ["section 1005c(a), (b), and (c)", "title 7"]
+
+
+def test_chain_class_is_taken_from_the_last_attached_label():
+    """"section 1211(b)(1) or (2)" continues paragraph (1), so "(2)"
+    belongs to the citation. Keying the class off the FIRST attached
+    label — the letter (b) — would expose it as a structural marker."""
+    assert _shielded("allowed under section 1211(b)(1) or (2) (A) In general") \
+        == ["section 1211(b)(1) or (2)"]
+
+
+def test_spaced_section_identifier_keeps_its_subdivisions():
+    """Corpus renders §1715l as "1715 l". Without the optional space the
+    shield stopped at "section 1715", leaving (d)(3)(ii)(I) to be read as
+    structural markers that truncated the enclosing paragraph."""
+    assert _shielded("(4) section 1715 l (d)(3)(ii)(I) of this title;") \
+        == ["section 1715 l (d)(3)(ii)(I)"]
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Ambiguous roman-letter markers
+# ────────────────────────────────────────────────────────────────────
+
+from axiom_bills._common.amendments import _candidate_depths  # noqa: E402
+
+
+def test_roman_letters_offer_both_readings():
+    """(i)/(v)/(l) are subsection or clause; (I)/(V) subparagraph or
+    subclause. Everything else is decided by its label alone."""
+    assert _candidate_depths("(i)", -1, True) == (0, 3)
+    assert _candidate_depths("(i)", 3, False) == (3, 0)
+    assert _candidate_depths("(I)", 2, False) == (2, 4)
+    assert _candidate_depths("(2)", 0, False) == (1,)
+    assert _candidate_depths("(ii)", 2, False) == (3,)
+    assert _candidate_depths("(b)", -1, True) == (0,)
+
+
+def test_subsection_i_is_not_answered_by_an_earlier_clause_i():
+    """The reason ambiguity is a fallback and not a first choice: a
+    clause (i) almost always appears before subsection (i) does, and a
+    wrong slice is worse than none."""
+    body = (
+        "(h) Earlier subsection (1) In general The term includes— "
+        "(A) any amount, and (B) any other amount described in— "
+        "(i) the first clause, or (ii) the second clause.\n\n"
+        "(i) Real subsection i Nothing in this section shall apply to "
+        "any taxpayer described in the regulations."
+    )
+    got, _ = slice_subsection(body, "26 USC 999(i)")
+    assert got is not None
+    assert "Real subsection i" in got, got[:80]
+
+
+def test_clause_i_still_reachable_as_a_deep_target():
+    body = (
+        "(h) Definitions (1) In general The term includes— "
+        "(A) any amount described in— (i) the first clause, or "
+        "(ii) the second clause."
+    )
+    got, _ = slice_subsection(body, "26 USC 999(h)(1)(A)(i)")
+    assert got is not None
+    assert "the first clause" in got, got[:80]
+
+
+def test_a_stray_marker_no_longer_discards_the_rest_of_the_section():
+    """The chain search used to reset on anything at or above the top
+    level's depth, so one spurious marker cost every later paragraph.
+    It now backtracks instead."""
+    body = (
+        "(a) Rules (1) first item. (2) second item, as the Secretary "
+        "may prescribe. and (3) third item. (4) fourth item. "
+        "(5) fifth item."
+    )
+    for n_, want in [("3", "third item"), ("4", "fourth item"),
+                     ("5", "fifth item")]:
+        got, _ = slice_subsection(body, f"7 USC 999(a)({n_})")
+        assert got is not None, n_
+        assert want in got, (n_, got[:60])

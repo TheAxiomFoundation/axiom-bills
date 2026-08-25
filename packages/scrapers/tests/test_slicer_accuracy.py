@@ -43,21 +43,20 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "slicer_cases.json.gz"
 # The fixture is deliberately failure-enriched: refresh_slicer_cases.py
 # keeps every sampled section that has at least one failing case, so the
 # hard sections are over-represented on purpose. Do NOT read these rates
-# as production accuracy — on the uncurated sample the same code scores
-# ~89% on subsections and ~80% on paragraphs. What matters here is the
-# direction of travel, not the absolute level.
+# as production accuracy — the uncurated population scores higher. What
+# matters here is the direction of travel, not the absolute level.
 #
 # Measured at the time of writing (1816 cases):
-#   overall     76.38% correct, 0.33% wrong, 23.29% miss
-#   subsection  88.48% correct
-#   paragraph   71.28% correct
+#   overall     86.62% correct, 0.33% wrong, 13.05% miss
+#   subsection  88.85% correct
+#   paragraph   85.68% correct
 #
 # Floors sit just under those. Update them when a change legitimately
 # moves the numbers — and say which change, in the commit message.
-MIN_CORRECT_OVERALL = 0.75
-MAX_WRONG_OVERALL = 0.008
+MIN_CORRECT_OVERALL = 0.85
+MAX_WRONG_OVERALL = 0.006
 MIN_CORRECT_SUBSECTION = 0.87
-MIN_CORRECT_PARAGRAPH = 0.69
+MIN_CORRECT_PARAGRAPH = 0.84
 
 # Sections a specific bug turned on. The fixture must never lose them,
 # whatever a future refresh samples.
