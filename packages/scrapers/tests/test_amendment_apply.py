@@ -96,3 +96,99 @@ def test_apply_unparsed_op_records_note():
     assert len(result.unapplied) == 1
     _, note = result.unapplied[0]
     assert "redesignate" in note
+
+
+# ────────────────────────────────────────────────────────────────────
+#  H.R.5366 regression — "the stard deduction"
+#
+#  The bill said "by striking ``and'' at the end of paragraph (6)".
+#  The scope qualifier trails the operand instead of leading it, so the
+#  op kept the whole-subsection target, and an unbounded substring
+#  replace struck the first "and" in the section — the one inside
+#  "standard deduction".
+# ────────────────────────────────────────────────────────────────────
+
+SECTION_63B = (
+    "(b) Individuals who do not itemize their deductions.—In the case of "
+    "an individual who does not elect to itemize his deductions for the "
+    "taxable year, for purposes of this subtitle, the term “taxable "
+    "income” means adjusted gross income, minus— (1) the standard "
+    "deduction, (2) the deduction for personal exemptions provided in "
+    "section 151, (3) the deduction provided in section 199A, (6) the "
+    "deduction for seniors, and (7) the deduction for tips."
+)
+
+_HR5366 = (
+    "Section 63(b) of the Internal Revenue Code of 1986 (26 U.S.C. 63(b)) "
+    "is amended--\n"
+    "            (1) by striking ``and'' at the end of paragraph (6);\n"
+)
+
+
+def test_trailing_scope_qualifier_narrows_the_op_target():
+    block = parse_bill_amendments(_HR5366)[0]
+    op = block.operations[0]
+    assert op.target == "26 USC 63(b)(6)"
+    assert op.at_end is True
+
+
+def test_striking_and_does_not_corrupt_standard_deduction():
+    block = parse_bill_amendments(_HR5366)[0]
+    result = apply_block(block, SECTION_63B, _slice)
+    assert "stard" not in result.after_text
+    assert "the standard deduction" in result.after_text
+    # The conjunction closing paragraph (6) is the one that goes.
+    assert "for seniors, and" not in result.after_text
+    assert "(7) the deduction for tips" in result.after_text
+
+
+def test_leading_and_trailing_scope_forms_agree():
+    leading = (
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended--\n"
+        "            (1) in paragraph (6), by striking ``and'' at the end;\n"
+    )
+    a = apply_block(parse_bill_amendments(_HR5366)[0], SECTION_63B, _slice)
+    b = apply_block(parse_bill_amendments(leading)[0], SECTION_63B, _slice)
+    assert a.after_text == b.after_text
+
+
+def test_bare_word_needle_never_matches_inside_a_word():
+    """Even with no scope at all, "and" must not hit "standard"."""
+    bill = (
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``and''.\n"
+    )
+    block = parse_bill_amendments(bill)[0]
+    result = apply_block(block, SECTION_63B, _slice)
+    assert "stard" not in (result.after_text or "")
+
+
+def test_ambiguous_unscoped_needle_is_declined_not_guessed():
+    """"deduction" appears many times; striking it unscoped is a coin
+    flip, so the op is reported unapplied with a reason."""
+    bill = (
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``deduction''.\n"
+    )
+    block = parse_bill_amendments(bill)[0]
+    result = apply_block(block, SECTION_63B, _slice)
+    assert not result.applied
+    assert len(result.unapplied) == 1
+    assert "ambiguous" in result.unapplied[0][1]
+    assert result.after_text == SECTION_63B
+
+
+def test_specific_needle_still_applies_unscoped():
+    """The guard is for short function words — a distinctive phrase
+    still applies on its first match, as before."""
+    bill = (
+        "Section 63(b) of the Internal Revenue Code of 1986 "
+        "(26 U.S.C. 63(b)) is amended by striking ``the deduction for "
+        "seniors'' and inserting ``the senior allowance''.\n"
+    )
+    block = parse_bill_amendments(bill)[0]
+    result = apply_block(block, SECTION_63B, _slice)
+    assert len(result.applied) == 1
+    assert "the senior allowance" in result.after_text
+    assert "the deduction for seniors" not in result.after_text
