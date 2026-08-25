@@ -11,12 +11,16 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
+    "@xyflow/react": "^12.11.2",
+    "dagre": "^0.8.5",
     "posthog-js": "^1.407.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.2"
+    "react-router-dom": "^6.26.2",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@types/dagre": "^0.7.54",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

@@ -19,6 +19,7 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -167,6 +168,33 @@ def _upsert(client: httpx.Client, table: str, rows: list[dict], *,
             )
         written += len(batch)
     return written
+
+
+def _tolerate_missing_table(step: Callable[[], int], *, table: str,
+                            migration: str) -> int:
+    """Run one sync step, skipping it when the REMOTE table is missing.
+
+    The newer tables (encoding_graphs, bill_reconciliations,
+    encode_queue) ship as supabase/migrations/*.sql pasted manually into
+    Studio (per the README) — a project that hasn't applied them yet
+    must degrade to a warning, mirroring how the local reads tolerate a
+    missing SQLite table. PostgREST reports an undefined relation as
+    PGRST205 / "Could not find the table"; any other error still raises.
+    """
+    try:
+        return step()
+    except RuntimeError as exc:
+        msg = str(exc)
+        if ("PGRST205" in msg or "Could not find the table" in msg
+                or ("relation" in msg and "does not exist" in msg)):
+            print(
+                f"WARNING: remote table {table} missing — apply "
+                f"supabase/migrations/{migration} in the Supabase SQL "
+                "editor; skipping this step.",
+                file=sys.stderr,
+            )
+            return 0
+        raise
 
 
 def _local(db_path: str) -> sqlite3.Connection:
@@ -685,6 +713,110 @@ def sync(db_path: str) -> dict[str, int]:
                     raise
                 counts["rule_variants"] = 0
 
+        # 9. Encoding graphs — one RulespecGraph JSON snapshot per
+        #    rulespec repo, written by precompute-graph. A run that
+        #    never built graphs (state matrix jobs, pre-059 DBs) has
+        #    no rows and says nothing about the remote table.
+        try:
+            graph_rows = _rows(local, """
+                SELECT repo, graph, generated_from, generated_at
+                  FROM encoding_graphs
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            graph_rows = []
+        for r in graph_rows:
+            r["graph"] = json.loads(r["graph"])
+        # Small chunk: each row is a whole dependency graph.
+        counts["encoding_graphs"] = _tolerate_missing_table(
+            lambda: _upsert(client, "encoding_graphs", graph_rows,
+                            on_conflict="repo", chunk=10),
+            table="encoding_graphs",
+            migration="20260721000000_encoding_graphs.sql",
+        )
+
+        # 10. Bill reconciliations — per-section agentic verdicts
+        #     written by `reconcile`. Tolerate a pre-060 local DB with
+        #     no table (state matrix jobs never run reconcile).
+        try:
+            rec_rows = _rows(local, """
+                SELECT id, bill_id, section_citation, payload, fingerprint,
+                       model, computed_at
+                  FROM bill_reconciliations
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            rec_rows = []
+        for r in rec_rows:
+            r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
+            r["payload"] = json.loads(r["payload"])
+        counts["bill_reconciliations"] = _tolerate_missing_table(
+            lambda: _upsert(client, "bill_reconciliations", rec_rows,
+                            on_conflict="bill_id,section_citation", chunk=200),
+            table="bill_reconciliations",
+            migration="20260721120000_bill_reconciliations.sql",
+        )
+
+        # 11. Encode queue — enqueue-once rows materialized by
+        #     `trigger-encodes`. Tolerate a pre-061 local DB with no
+        #     table. The queue's contract is that an existing row keeps
+        #     its status (a dismissed row stays dismissed), and CI
+        #     re-scans from a fresh SQLite every run — so a local row
+        #     whose (bill, citation, reason) already exists remotely is
+        #     only pushed when a local `--run` actually resolved it;
+        #     fresh 'pending' duplicates are dropped instead of
+        #     clobbering the remote status.
+        try:
+            queue_rows = _rows(local, """
+                SELECT id, bill_id, citation, corpus_citation_path, reason,
+                       status, detail, enqueued_at, resolved_at
+                  FROM encode_queue
+            """)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            queue_rows = []
+        for r in queue_rows:
+            r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
+
+        def _push_encode_queue() -> int:
+            remote_queue = _remote_rows_by_in(
+                client,
+                "encode_queue",
+                select="id,bill_id,citation,reason,status",
+                column="bill_id",
+                values=(r["bill_id"] for r in queue_rows),
+            )
+            remote_by_key = {
+                (q["bill_id"], q["citation"], q["reason"]): q
+                for q in remote_queue
+            }
+            push_rows = []
+            for r in queue_rows:
+                remote = remote_by_key.get(
+                    (r["bill_id"], r["citation"], r["reason"]))
+                if remote is None:
+                    push_rows.append(r)
+                elif r["status"] != "pending" and remote["status"] != "dismissed":
+                    # A local --run outcome updates the remote row — unless a
+                    # human dismissed it there in the meantime: dismissed is
+                    # terminal and must never be overwritten, per the queue's
+                    # enqueue-once contract.
+                    r["id"] = remote["id"]
+                    push_rows.append(r)
+            return _upsert(
+                client, "encode_queue", push_rows,
+                on_conflict="bill_id,citation,reason",
+            )
+
+        counts["encode_queue"] = _tolerate_missing_table(
+            _push_encode_queue,
+            table="encode_queue",
+            migration="20260721130000_encode_queue.sql",
+        )
+
     local.close()
     return counts
 
@@ -753,6 +885,8 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if r["proposed_by"] == "llm" and r["patched_yaml"]
         }
 
+        from .variants import SUPERSEDED_MARKER
+
         for row in pending:
             remote = remote_by_key.get(
                 (bill_id_map[row["bill_id"]], row["file_path"])
@@ -760,6 +894,28 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if remote is None:
                 continue
             if remote["source_ops_fingerprint"] != row["source_ops_fingerprint"]:
+                # A prior LLM proposal exists remotely but the bill's
+                # inputs changed. Stamp the local row so the encode
+                # queue's stale_variant scan can see the supersede on a
+                # fresh CI database (where variants._upsert_variant's
+                # own supersede branch never fires — there is no prior
+                # local row to supersede).
+                stale = (f"{SUPERSEDED_MARKER} "
+                         f"{remote['proposed_model'] or 'LLM'} proposal: "
+                         "bill amendments or baseline changed since it "
+                         "was drafted.")
+                local.execute(
+                    """
+                    UPDATE rule_variants
+                       SET note = CASE
+                             WHEN note IS NULL OR note = '' THEN ?
+                             ELSE note || '; ' || ?
+                           END
+                     WHERE id = ?
+                       AND (note IS NULL OR note NOT LIKE ?)
+                    """,
+                    (stale, stale, row["id"], f"%{SUPERSEDED_MARKER}%"),
+                )
                 counts["stale_remote"] += 1
                 continue
             local.execute(
@@ -770,6 +926,125 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
                  WHERE id = ?
                 """,
                 (remote["patched_yaml"], remote["proposed_model"], row["id"]),
+            )
+            counts["hydrated"] += 1
+        local.commit()
+    local.close()
+    return counts
+
+
+def hydrate_reconciliations(db_path: str) -> dict[str, int]:
+    """Pull still-valid reconciliation verdicts from Supabase into
+    local SQLite.
+
+    CI runs start from an empty SQLite, so verdicts from earlier runs
+    live only in Supabase — without hydration the ``reconcile``
+    fingerprint skip never fires and the same sections get re-analyzed
+    hourly. Run after ``precompute-diffs`` and before ``reconcile``:
+    every candidate section's fingerprint is recomputed from the fresh
+    local diffs (the exact skip key ``reconcile`` uses), and any remote
+    row whose fingerprint still matches is copied down so the LLM is
+    only called for genuinely new or changed sections.
+    """
+    from .reconcile_llm import candidate_sections, section_fingerprint
+
+    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
+    local = _local(db_path)
+    try:
+        # touches_rulespec is precomputed with exactly the
+        # candidate_sections predicate — filtering on it skips the JSON
+        # parse of every non-touching bill's diffs blob.
+        bill_rows = [dict(r) for r in local.execute("""
+            SELECT id, jurisdiction, session_id, chamber, number, diffs
+              FROM bills
+             WHERE diffs IS NOT NULL
+               AND touches_rulespec = 1
+        """)]
+        # Probe the target table up front so a pre-060 DB degrades to a
+        # no-op instead of failing mid-hydration.
+        local.execute("SELECT 1 FROM bill_reconciliations LIMIT 1")
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            local.close()
+            return counts
+        raise
+
+    pending: list[tuple[dict, str, str]] = []  # (bill row, citation, fp)
+    for row in bill_rows:
+        diffs = (json.loads(row["diffs"])
+                 if isinstance(row["diffs"], str) else row["diffs"])
+        for section in candidate_sections(diffs):
+            fingerprint = section_fingerprint(section)
+            existing = local.execute(
+                """
+                SELECT fingerprint FROM bill_reconciliations
+                 WHERE bill_id = ? AND section_citation = ?
+                """, (row["id"], section["citation"]),
+            ).fetchone()
+            if existing and existing["fingerprint"] == fingerprint:
+                continue  # already current locally — reconcile will skip
+            pending.append((row, section["citation"], fingerprint))
+    counts["candidates"] = len(pending)
+    if not pending:
+        local.close()
+        return counts
+
+    with _client() as client:
+        session_rows = local.execute(
+            "SELECT id, jurisdiction, name FROM sessions"
+        ).fetchall()
+        session_id_map, known_remote_sessions = _remote_session_ids(
+            client, session_rows)
+        bill_lookup_rows = list({
+            row["id"]: {
+                "id": row["id"],
+                "jurisdiction": row["jurisdiction"],
+                "session_id": session_id_map.get(row["session_id"], row["session_id"]),
+                "chamber": row["chamber"],
+                "number": row["number"],
+            }
+            for row, _, _ in pending
+        }.values())
+        bill_id_map = _remote_bill_ids(client, bill_lookup_rows,
+                                       known_remote_sessions)
+
+        remote_rows = _remote_rows_by_in(
+            client,
+            "bill_reconciliations",
+            select=("bill_id,section_citation,payload,fingerprint,"
+                    "model,computed_at"),
+            column="bill_id",
+            values=(bill_id_map[row["id"]] for row, _, _ in pending),
+        )
+        remote_by_key = {
+            (r["bill_id"], r["section_citation"]): r
+            for r in remote_rows
+        }
+
+        for row, citation, fingerprint in pending:
+            remote = remote_by_key.get((bill_id_map[row["id"]], citation))
+            if remote is None:
+                continue
+            if remote["fingerprint"] != fingerprint:
+                counts["stale_remote"] += 1
+                continue
+            payload = remote["payload"]
+            if not isinstance(payload, str):
+                payload = json.dumps(payload)
+            local.execute(
+                """
+                INSERT INTO bill_reconciliations
+                    (id, bill_id, section_citation, payload, fingerprint,
+                     model, computed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(bill_id, section_citation) DO UPDATE SET
+                    payload = excluded.payload,
+                    fingerprint = excluded.fingerprint,
+                    model = excluded.model,
+                    computed_at = excluded.computed_at
+                """,
+                (uuid.uuid4().hex, row["id"], citation, payload,
+                 fingerprint, remote["model"], remote["computed_at"]),
             )
             counts["hydrated"] += 1
         local.commit()

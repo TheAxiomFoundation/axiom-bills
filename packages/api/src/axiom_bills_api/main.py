@@ -701,7 +701,17 @@ def bill_diffs(bill_id: str) -> dict:
             ))
             continue
 
-        applied_result = apply_block(block, prov.body, slice_subsection)
+        def _exact_corpus_body(citation: str) -> str | None:
+            # Exact rows only: fetch_corpus falls back to ancestors, and
+            # an ancestor body is a wider span than the citation names.
+            row = fetch_corpus(citation, db_path=DB_PATH)
+            return row.body if row is not None and row.is_exact_match else None
+
+        applied_result = apply_block(
+            block, prov.body, slice_subsection,
+            resolve_scope=_exact_corpus_body,
+            body_is_exact=prov.is_exact_match,
+        )
         # Diff is computed against the block's *scope* (the slice), not
         # the full corpus body — keeps the visible change tight.
         before = applied_result.before_text or prov.body
@@ -724,7 +734,7 @@ def bill_diffs(bill_id: str) -> dict:
             "applied_ops":   [_op_dict(o) for o in applied_result.applied],
             "unapplied_ops": [{**_op_dict(o), "note": note}
                               for o, note in applied_result.unapplied],
-            "parse_warnings": block.parse_warnings,
+            "parse_warnings": block.parse_warnings + applied_result.notes,
             "block_raw": block.raw[:1200] if block.parse_warnings else None,
             "has_rulespec":  bool(encoding),
             "encoding":      encoding,
@@ -802,6 +812,7 @@ def _op_dict(op) -> dict:
         "payload": getattr(op, "payload", ""),
         "anchor": getattr(op, "anchor", ""),
         "redesignate_to": getattr(op, "redesignate_to", ""),
+        "scope_source": getattr(op, "scope_source", ""),
         "raw":    getattr(op, "raw", ""),
     }
 

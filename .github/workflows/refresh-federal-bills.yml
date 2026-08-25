@@ -167,15 +167,42 @@ jobs:
           # --repo-name keeps the identifier (and the file_path
           # convention) that prod encodings already use.
           uv run --project packages/scrapers axiom-bills index-encodings --repo "$RULESPEC_US_ROOT" --repo-name rulespec-us
+          # Non-fatal: a graph failure (e.g. a rulespec layout change at
+          # unpinned HEAD) keeps the previous snapshot; it must not
+          # discard the hour's scrape before sync-supabase runs.
+          uv run --project packages/scrapers axiom-bills precompute-graph --repo "$RULESPEC_US_ROOT" --repo-name rulespec-us \
+            || echo "::warning::precompute-graph failed - keeping the previous graph snapshot."
           if [[ "$FETCH_TEXTS" != "false" ]]; then
             uv run --project packages/scrapers axiom-bills fetch-texts --jurisdiction us
             uv run --project packages/scrapers axiom-bills precompute-diffs --jurisdiction us
             uv run --project packages/scrapers axiom-bills precompute-variants --jurisdiction us
             # Reuse LLM proposals already in Supabase whose inputs are
             # unchanged; only propose for genuinely new/changed variants.
+            # Also stamps superseded notes on rows whose remote proposal
+            # no longer matches — the stale_variant queue signal below.
             uv run --project packages/scrapers axiom-bills hydrate-variants
+            # Enqueue-only scan of the re-encode trigger queue — after
+            # precompute-variants/hydrate-variants so the stale_variant
+            # signal can see superseded rows. The local `--run` mode
+            # never runs in CI — encoder runs need local
+            # corpus/rulespec/engine checkouts and stay human-gated.
+            # Non-fatal for the same reason as precompute-graph.
+            uv run --project packages/scrapers axiom-bills trigger-encodes -j us \
+              || echo "::warning::trigger-encodes scan failed - queue not refreshed this run."
             if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
               uv run --project packages/scrapers axiom-bills propose-llm-variants --jurisdiction us --limit 20
+              # Reuse reconciliation verdicts already in Supabase whose
+              # section fingerprints are unchanged — the fresh SQLite
+              # would otherwise re-analyze the same sections hourly.
+              # Both reconciliation steps are non-fatal: a transient
+              # Supabase/Anthropic failure must not throw away the
+              # bills/texts/diffs/variants computed this hour.
+              uv run --project packages/scrapers axiom-bills hydrate-reconciliations \
+                || echo "::warning::hydrate-reconciliations failed - reconcile may re-analyze cached sections."
+              # Capped agentic bill↔encoding reconciliation pass:
+              # sections with an unchanged input fingerprint are skipped.
+              uv run --project packages/scrapers axiom-bills reconcile -j us --limit 10 \
+                || echo "::warning::reconcile failed - verdicts not refreshed this run."
             else
               echo "::notice::ANTHROPIC_API_KEY not set - skipping LLM variant proposals."
             fi

@@ -7,7 +7,20 @@
  * `26 USC 32(c)(1)(E), 32(m)`).
  */
 import { describe, it, expect } from "vitest";
-import { sliceRulesBySource, normalizeSources } from "./yaml-slice";
+import { normCitation, normalizeSources, sliceRulesBySource } from "./yaml-slice";
+
+
+describe("normCitation", () => {
+  // Shared by the slicer's overlap check AND the impact graph's
+  // citationsIntersect (graph/overlay.ts) — the two views must agree.
+  it("collapses dotted/§/IRC forms to plain TITLE USC SECTION", () => {
+    expect(normCitation("20 U.S.C. § 1070a(b)(5)")).toBe("20 USC 1070a(b)(5)");
+    expect(normCitation("7 C.F.R. 273.3(a)")).toBe("7 CFR 273.3(a)");
+    expect(normCitation("IRC section 63(c)(5)")).toBe("26 USC 63(c)(5)");
+    expect(normCitation("IRC § 63")).toBe("26 USC 63");
+    expect(normCitation("  26  USC   32 ")).toBe("26 USC 32");
+  });
+});
 
 
 describe("normalizeSources", () => {
@@ -226,10 +239,14 @@ describe("sliceRulesBySource", () => {
     expect(out.shown).toBe(0);
   });
 
-  it("preserves the preamble (format, module, summary) on filter", () => {
+  it("drops the preamble (format, module, summary) on filter", () => {
+    // The module header can run to dozens of lines of deferred-outputs
+    // prose (e.g. 26 USC 25E) and buried the one relevant rule; the
+    // filtered view starts straight at rules:. "Show full file" still
+    // renders the original text.
     const out = sliceRulesBySource(FIXTURE, "26 USC 32(m)");
-    expect(out.filtered).toContain("format: rulespec/v1");
-    expect(out.filtered).toContain("EITC rules with mixed source shapes");
+    expect(out.filtered).not.toContain("format: rulespec/v1");
+    expect(out.filtered).not.toContain("EITC rules with mixed source shapes");
   });
 
   it("does not match data_relation rules with no source", () => {
@@ -284,5 +301,29 @@ describe("normCitation IRC form", () => {
     const out = sliceRulesBySource(IRC_FILE, "26 USC 63(c)");
     expect(out.fallback).toBe(false);
     expect(out.shown).toBe(1);
+  });
+});
+
+describe("filtered view readability", () => {
+  it("drops the module preamble — the reader gets rules, not the header wall", () => {
+    const out = sliceRulesBySource(FIXTURE, "26 USC 32(b)(1)");
+    expect(out.filtered.startsWith("rules:\n")).toBe(true);
+    expect(out.filtered).not.toContain("format: rulespec/v1");
+    expect(out.filtered).not.toContain("module:");
+    expect(out.filtered).not.toContain("summary:");
+  });
+
+  it("keeps the full file (preamble included) on fallback", () => {
+    const out = sliceRulesBySource(FIXTURE, "26 USC 99");
+    expect(out.filtered).toContain("format: rulespec/v1");
+    expect(out.filtered).toContain("module:");
+  });
+
+  it("still yields valid rule blocks after the preamble is dropped", () => {
+    const out = sliceRulesBySource(FIXTURE, "26 USC 32");
+    // Every kept block starts at its `- name:` line under `rules:`.
+    const lines = out.filtered.split("\n");
+    expect(lines[0]).toBe("rules:");
+    expect(lines[1]).toMatch(/^ {0,2}- name:/);
   });
 });

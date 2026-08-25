@@ -36,6 +36,21 @@ AXIOM_APP_URL = os.environ.get(
 )
 
 
+def _exact_corpus_body(db_path: str):
+    """Build a `citation -> exact corpus body` lookup for the applier.
+
+    Only an exact hit counts. `fetch_corpus` falls back to ancestors,
+    which is right for choosing what to display but wrong for scoping an
+    edit: an ancestor's body is a wider span than the citation names.
+    """
+    def resolve(citation: str) -> str | None:
+        prov = fetch_corpus(citation, db_path=db_path)
+        if prov is None or not prov.is_exact_match:
+            return None
+        return prov.body
+    return resolve
+
+
 def _op_dict(op) -> dict:
     return {
         "kind":   getattr(op, "kind", ""),
@@ -44,6 +59,7 @@ def _op_dict(op) -> dict:
         "payload": getattr(op, "payload", ""),
         "anchor": getattr(op, "anchor", ""),
         "redesignate_to": getattr(op, "redesignate_to", ""),
+        "scope_source": getattr(op, "scope_source", ""),
         "raw":    getattr(op, "raw", ""),
     }
 
@@ -172,59 +188,29 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
                                        operations=block.operations))
             continue
 
-        applied_result = apply_block(block, prov.body, slice_subsection)
+        applied_result = apply_block(
+            block, prov.body, slice_subsection,
+            resolve_scope=_exact_corpus_body(db_path),
+            body_is_exact=prov.is_exact_match,
+        )
 
-        if not prov.is_exact_match:
-            slice_text, _offs = slice_subsection(prov.body, target)
-            if slice_text:
-                # Slice exists; if any op applied, diff slice-vs-applied;
-                # otherwise show the subsection as context.
-                if applied_result.applied:
-                    after = applied_result.after_text or slice_text
-                    sections.append(_section_payload(
-                        target, encoding, prov,
-                        encoding_backlog=encoding_backlog,
-                        before=slice_text, after=after,
-                        applied=applied_result.applied,
-                        unapplied=applied_result.unapplied,
-                        block_warnings=block.parse_warnings,
-                        block_raw=block.raw,
-                        sliced=True,
-                    ))
-                    continue
-                sections.append(_section_payload(
-                    target, encoding, prov,
-                    encoding_backlog=encoding_backlog,
-                    before=slice_text, after=slice_text,
-                    applied=[], unapplied=applied_result.unapplied,
-                    block_warnings=block.parse_warnings,
-                    block_raw=block.raw,
-                    sliced=True,
-                ))
-                continue
-            # Slice not found — show parent body.
-            sections.append(_section_payload(
-                target, encoding, prov,
-                before=prov.body, after=prov.body,
-                applied=[], unapplied=applied_result.unapplied,
-                block_warnings=block.parse_warnings,
-                block_raw=block.raw,
-                sliced=False,
-            ))
-            continue
-
-        # Exact match: corpus body IS the target.
-        after = applied_result.after_text or prov.body
+        # apply_block has already narrowed to the block's own scope —
+        # via the exact corpus row where one exists, else the marker
+        # heuristics, else the enclosing section under the unique-match
+        # rule. Re-slicing here would duplicate that logic and could
+        # disagree with the text the ops were actually applied to.
+        before = applied_result.before_text or prov.body
+        after = applied_result.after_text or before
         sections.append(_section_payload(
             target, encoding, prov,
             encoding_backlog=encoding_backlog,
-            before=prov.body, after=after,
+            before=before, after=after,
             applied=applied_result.applied,
             unapplied=applied_result.unapplied,
-            block_warnings=block.parse_warnings,
+            block_warnings=block.parse_warnings + applied_result.notes,
             block_raw=block.raw,
-            sliced=False,
-            exact_match=True,
+            sliced=not prov.is_exact_match,
+            exact_match=prov.is_exact_match,
         ))
 
     # NOTE: we used to render encoded-citation-only sections here as

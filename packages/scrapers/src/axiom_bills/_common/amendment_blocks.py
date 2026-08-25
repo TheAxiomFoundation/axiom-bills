@@ -61,7 +61,14 @@ class Op:
     payload: str = ""
     anchor: str = ""                # for insert-after: the text we insert after
     redesignate_to: str = ""        # for redesignate
+    at_end: bool = False            # operand sits at the tail of the scope
     raw: str = ""                   # the verbatim bill substring this came from
+    # How the applier established this op's scope. Set during apply, not
+    # parse: 'corpus' = an exact corpus row addressed the target;
+    # 'sliced' = we fell back to marker heuristics over prose;
+    # 'block' = the op targets the block itself. Consumers surface
+    # 'sliced' so a heuristic scope is never mistaken for a verified one.
+    scope_source: str = ""
 
 
 @dataclass
@@ -99,21 +106,13 @@ def _norm_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _norm_find(haystack: str, needle: str) -> int:
-    """Find `needle` in `haystack` ignoring whitespace differences.
+def _norm_index(haystack: str) -> tuple[str, list[int]]:
+    """Whitespace-collapsed form of `haystack` plus a parallel index map.
 
-    Returns the start offset in the *original* haystack, or -1 if not
-    found. Works by building a parallel mapping: for each character in
-    a whitespace-normalized form of haystack, record what original
-    offset it corresponds to.
+    ``index_map[i]`` is the offset in the ORIGINAL string of the
+    normalized character ``i``, so a match found in normalized space can
+    be mapped back to real offsets.
     """
-    if not needle:
-        return -1
-    needle_norm = _norm_ws(needle)
-    if not needle_norm:
-        return -1
-
-    # Build the normalized form of haystack and a parallel index map.
     norm_chars: list[str] = []
     index_map: list[int] = []
     prev_ws = True   # treat the start as if preceded by whitespace so we
@@ -129,52 +128,104 @@ def _norm_find(haystack: str, needle: str) -> int:
             norm_chars.append(ch)
             index_map.append(i)
             prev_ws = False
-    norm_text = "".join(norm_chars).rstrip()
-
-    pos = norm_text.find(needle_norm)
-    if pos < 0:
-        return -1
-    return index_map[pos]
+    while norm_chars and norm_chars[-1] == " ":
+        norm_chars.pop()
+        index_map.pop()
+    return "".join(norm_chars), index_map
 
 
-def _norm_replace(haystack: str, needle: str, payload: str) -> tuple[str, bool]:
-    """Whitespace-tolerant single-occurrence replace.
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
 
-    Find `needle` in `haystack` via `_norm_find`, then locate the
-    corresponding end offset by counting normalized characters off the
-    same index map. Returns (new_haystack, True) on success or
-    (haystack, False) on miss.
+
+def _norm_spans(haystack: str, needle: str, *,
+                bounded: bool = True) -> list[tuple[int, int]]:
+    """All whitespace-tolerant occurrences of `needle`, as (start, end)
+    offsets into the ORIGINAL `haystack`.
+
+    With bounded=True (the default) an occurrence is skipped when it
+    merely continues a word. Bills routinely strike bare function words
+    — "by striking `and` at the end" — and an unbounded substring search
+    matches the "and" inside "standard", silently rewriting "the
+    standard deduction" as "the stard deduction". Only the sides where
+    the needle itself begins or ends on a word character are
+    constrained, so needles that start or end on punctuation (".",
+    ", and", "(2)") still match as before.
     """
     if not needle:
-        return haystack, False
-    start = _norm_find(haystack, needle)
-    if start < 0:
-        return haystack, False
-    # Determine end offset by walking forward through whitespace-
-    # collapsed chars until we've matched len(needle_norm) of them.
+        return []
     needle_norm = _norm_ws(needle)
-    matched = 0
-    end = start
-    prev_ws = False if not haystack[start].isspace() else True
-    for j in range(start, len(haystack)):
-        ch = haystack[j]
-        if ch.isspace():
-            if prev_ws:
-                continue
-            norm_ch = " "
-            prev_ws = True
-        else:
-            norm_ch = ch
-            prev_ws = False
-        if matched < len(needle_norm) and norm_ch == needle_norm[matched]:
-            matched += 1
-            end = j + 1
-            if matched == len(needle_norm):
-                break
-        else:
-            # mismatch mid-run — shouldn't happen if _norm_find said yes
-            return haystack, False
+    if not needle_norm:
+        return []
+
+    norm_text, index_map = _norm_index(haystack)
+    width = len(needle_norm)
+    spans: list[tuple[int, int]] = []
+    pos = norm_text.find(needle_norm)
+    while pos >= 0:
+        stop = pos + width
+        ok = True
+        if bounded:
+            if (_is_word_char(needle_norm[0]) and pos > 0
+                    and _is_word_char(norm_text[pos - 1])):
+                ok = False
+            if (ok and _is_word_char(needle_norm[-1]) and stop < len(norm_text)
+                    and _is_word_char(norm_text[stop])):
+                ok = False
+        if ok:
+            spans.append((index_map[pos], index_map[stop - 1] + 1))
+        pos = norm_text.find(needle_norm, pos + 1)
+    return spans
+
+
+def _norm_find(haystack: str, needle: str, *, bounded: bool = True) -> int:
+    """Start offset of the first acceptable occurrence, or -1."""
+    spans = _norm_spans(haystack, needle, bounded=bounded)
+    return spans[0][0] if spans else -1
+
+
+def _norm_replace(haystack: str, needle: str, payload: str, *,
+                  bounded: bool = True) -> tuple[str, bool]:
+    """Whitespace-tolerant, word-boundary-aware single replace.
+
+    Returns (new_haystack, True) on success or (haystack, False) on miss.
+    """
+    spans = _norm_spans(haystack, needle, bounded=bounded)
+    if not spans:
+        return haystack, False
+    start, end = spans[0]
     return haystack[:start] + payload + haystack[end:], True
+
+
+def _replace_trailing(haystack: str, needle: str,
+                      payload: str) -> tuple[str, bool]:
+    """Replace `needle` where it sits at the very end of `haystack`.
+
+    "by striking the period at the end and inserting ``, and''" names a
+    position, not the first match — replacing the first "." in the scope
+    rewrites the wrong sentence.
+    """
+    needle_norm = _norm_ws(needle)
+    if not needle_norm:
+        return haystack, False
+    stripped = haystack.rstrip()
+    if not stripped.endswith(needle_norm):
+        return haystack, False
+    tail = haystack[len(stripped):]
+    return stripped[:len(stripped) - len(needle_norm)] + payload + tail, True
+
+
+# A needle is "ambiguous" when it carries no distinguishing content — a
+# short run of ordinary words. Striking such a needle from an unnarrowed
+# scope that contains several of them is a coin flip, so we decline
+# rather than guess. Needles carrying a number, dollar sign, or percent
+# are specific enough that the first match is reliable.
+_SPECIFIC_NEEDLE_RE = re.compile(r"[0-9$%]")
+
+
+def _is_ambiguous_needle(needle: str) -> bool:
+    norm = _norm_ws(needle)
+    return len(norm) <= 12 and not _SPECIFIC_NEEDLE_RE.search(norm)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -573,7 +624,7 @@ _INSERT_BEFORE_RE = re.compile(
 # narrows the op target.
 _STRIKE_PERIOD_INSERT_RE = re.compile(
     r"by\s+striking\s+the\s+period"
-    r"(?:\s+at\s+the\s+end)?"
+    r"(?P<at_end>\s+at\s+the\s+end)?"
     r"(?:\s+of\s+(?P<scope_level>subsection|paragraph|subparagraph|clause|subclause)"
     r"\s+\((?P<scope_label>[^)]+)\))?"
     r"\s+and\s+inserting\s+"
@@ -585,7 +636,7 @@ _STRIKE_PERIOD_INSERT_RE = re.compile(
 # — adds text just before trailing punctuation, with optional scope.
 _INSERT_BEFORE_PUNCT_RE = re.compile(
     r"by\s+inserting\s+before\s+the\s+(?P<punct>period|semicolon|comma)"
-    r"(?:\s+at\s+the\s+end)?"
+    r"(?P<at_end>\s+at\s+the\s+end)?"
     r"(?:\s+of\s+(?P<scope_level>subsection|paragraph|subparagraph|clause|subclause)"
     r"\s+\((?P<scope_label>[^)]+)\))?"
     r"\s+"
@@ -658,6 +709,45 @@ _NON_NARROWING_PREFIX_RE = re.compile(
     r"^\s*in\s+the\s+(?:heading|matter\s+preceding[^,]*)\s*,?\s*",
     re.IGNORECASE,
 )
+
+# Trailing scope qualifier: "by striking ``and'' at the end of paragraph
+# (6)" / "by striking ``X'' in clause (ii)". Drafters put the narrowing
+# scope either BEFORE the verb ("in paragraph (6), by striking ...",
+# handled by _SCOPE_PREFIX_RE) or AFTER the operand. Only the leading
+# form used to be peeled, so the trailing form left the op pointed at
+# the whole subsection — and the applier then searched the entire
+# section for the needle.
+_TRAILING_SCOPE_RE = re.compile(
+    r"^(?P<at_end>\s+at\s+the\s+end)?"
+    r"\s+(?:of|in)\s+"
+    r"(?P<level>subsection|paragraph|subparagraph|clause|subclause)\s+"
+    r"\((?P<label>[^)]+)\)"
+    r"(?P<chain>(?:\s*\([^)]+\))*)",
+    re.IGNORECASE,
+)
+
+# "at the end" with no scope after it — tells us the operand is at the
+# tail of the current scope even though the scope doesn't narrow.
+_BARE_AT_END_RE = re.compile(r"^\s+at\s+the\s+end\b(?!\s+of\s+)", re.IGNORECASE)
+
+
+def _peel_trailing_scope(rest: str, target: str) -> tuple[str, bool, int]:
+    """Read a scope qualifier trailing a verb phrase.
+
+    `rest` is the bill text immediately following the matched verb.
+    Returns (narrowed_target, at_end, chars_consumed).
+    """
+    m = _TRAILING_SCOPE_RE.match(rest)
+    if m:
+        narrowed = _narrow_target(target, m.group("level"),
+                                  m.group("label").strip())
+        chain = _normalize_subscripts(m.group("chain") or "")
+        return narrowed + chain, bool(m.group("at_end")), m.end()
+    m = _BARE_AT_END_RE.match(rest)
+    if m:
+        return target, True, m.end()
+    return target, False, 0
+
 
 _LEVEL_TO_DEPTH = {
     "subsection":   0,
@@ -748,14 +838,16 @@ def _parse_verbs(text: str, target: str, *, warnings: list[str]) -> list[Op]:
 
         m = _STRIKE_INSERT_RE.search(sub)
         if m and m.start() < 8:
+            op_target, at_end, eaten = _peel_trailing_scope(sub[m.end():], target)
             ops.append(Op(
                 kind="strike-insert",
-                target=target,
+                target=op_target,
                 needle=m.group("needle"),
                 payload=m.group("payload"),
-                raw=m.group(0),
+                at_end=at_end,
+                raw=sub[m.start():m.end() + eaten],
             ))
-            cursor += m.end()
+            cursor += m.end() + eaten
             progressed = True
             continue
 
@@ -839,6 +931,7 @@ def _parse_verbs(text: str, target: str, *, warnings: list[str]) -> list[Op]:
                 target=op_target,
                 needle=".",
                 payload=m.group("payload"),
+                at_end=bool(m.group("at_end")),
                 raw=m.group(0),
             ))
             cursor += m.end()
@@ -857,6 +950,7 @@ def _parse_verbs(text: str, target: str, *, warnings: list[str]) -> list[Op]:
                 target=op_target,
                 needle=anchor_char,
                 payload=m.group("payload") + anchor_char,
+                at_end=bool(m.group("at_end")),
                 raw=m.group(0),
             ))
             cursor += m.end()
@@ -920,13 +1014,15 @@ def _parse_verbs(text: str, target: str, *, warnings: list[str]) -> list[Op]:
 
         m = _STRIKE_RE.search(sub)
         if m and m.start() < 8:
+            op_target, at_end, eaten = _peel_trailing_scope(sub[m.end():], target)
             ops.append(Op(
                 kind="strike",
-                target=target,
+                target=op_target,
                 needle=m.group("needle"),
-                raw=m.group(0),
+                at_end=at_end,
+                raw=sub[m.start():m.end() + eaten],
             ))
-            cursor += m.end()
+            cursor += m.end() + eaten
             progressed = True
             continue
 
@@ -1168,31 +1264,145 @@ def _slice_for(target: str, body: str) -> tuple[str, tuple[int, int]] | None:
     return None
 
 
-def apply_op(op: Op, body: str, block_target: str) -> tuple[str, bool, str]:
-    """Apply a single Op to ``body`` (the slice corresponding to ``block_target``).
+def _corpus_span(target: str, body: str,
+                 resolve_scope) -> tuple[int, int] | None:
+    """Locate `target`'s scope in `body` using corpus as the authority.
+
+    axiom-corpus stores subsections and paragraphs as their own rows
+    (`us/statute/26/63/b/6`), so the exact text of the scope is a fact we
+    can look up rather than a structure we have to re-derive from prose
+    with marker heuristics. We fetch that row and find its body inside
+    the block text.
+
+    The match must be unique: corpus text appearing twice in the parent
+    means we cannot say which copy the amendment means.
+    """
+    if resolve_scope is None:
+        return None
+    try:
+        scope_text = resolve_scope(target)
+    except Exception:
+        # A corpus outage must not silently downgrade every op to the
+        # heuristic path — but it also must not crash the run. The
+        # caller's own corpus fetch raises CorpusUnavailable first in
+        # practice; this is belt-and-braces.
+        return None
+    if not scope_text or not scope_text.strip():
+        return None
+    spans = _norm_spans(body, scope_text, bounded=False)
+    if len(spans) != 1:
+        return None
+    return spans[0]
+
+
+def _resolve_strike(op: Op, work_text: str, payload: str, *,
+                    require_unique: bool = False) -> tuple[str | None, str]:
+    """Locate an op's needle in `work_text` and substitute `payload`.
+
+    Returns (new_text, "") on success or (None, reason) when we decline.
+    Declining is the honest outcome: the caller records the op as
+    unapplied and the UI falls back to the bill text, whereas a wrong
+    match silently corrupts the "current law, as amended" rendering
+    that reconciliation verdicts are drawn from.
+    """
+    shown = _norm_ws(op.needle)[:60]
+
+    if op.at_end and not require_unique:
+        # "at the end" names a position. Prefer a true trailing match;
+        # otherwise take the LAST occurrence, never the first.
+        new_work, ok = _replace_trailing(work_text, op.needle, payload)
+        if ok:
+            return new_work, ""
+        spans = _norm_spans(work_text, op.needle)
+        if not spans:
+            return None, f"needle not found at end of {op.target}: {shown!r}"
+        start, end = spans[-1]
+        return work_text[:start] + payload + work_text[end:], ""
+
+    spans = _norm_spans(work_text, op.needle)
+    if not spans:
+        return None, f"needle not found: {shown!r}"
+    if require_unique and len(spans) > 1:
+        return None, (
+            f"couldn't isolate {op.target}, and {shown!r} occurs "
+            f"{len(spans)} times in the surrounding text"
+        )
+    if len(spans) > 1 and _is_ambiguous_needle(op.needle):
+        return None, (
+            f"ambiguous needle {shown!r}: {len(spans)} matches in "
+            f"{op.target} and the bill did not narrow the scope"
+        )
+    start, end = spans[0]
+    return work_text[:start] + payload + work_text[end:], ""
+
+
+def apply_op(op: Op, body: str, block_target: str, *,
+             resolve_scope=None, body_is_exact: bool = True) -> tuple[str, bool, str]:
+    """Apply a single Op to ``body`` (the text covering ``block_target``).
 
     Returns (new_body, applied, note). `note` carries a short reason
     when applied=False so the UI can show "couldn't apply this op
     because needle not found" rather than dropping silently.
+
+    Scope is established corpus-first. `resolve_scope(citation) -> str |
+    None` returns the body of the EXACT corpus row for a citation (never
+    an ancestor); corpus stores subsections and paragraphs as addressable
+    rows, so for those levels the scope is a lookup rather than a guess.
+    Marker-heuristic slicing remains the fallback for subparagraph and
+    deeper, where corpus has no row — those ops are tagged
+    ``scope_source='sliced'`` so nothing downstream mistakes a heuristic
+    scope for a verified one.
+
+    `body_is_exact` says whether `body` really is `block_target`'s text.
+    When corpus only had an ancestor, an op we can't scope must NOT be
+    applied against the whole ancestor: that is how an edit aimed at
+    subsection (b) lands in subsection (a).
     """
-    # If op.target is deeper than block_target, slice the sub-scope out
-    # of body, apply, stitch back.
     sub_offsets: tuple[int, int] | None = None
     work_text = body
-    if op.target != block_target:
-        sliced = _slice_for(op.target, body)
-        if sliced is None:
-            return body, False, f"couldn't locate {op.target} within {block_target}"
-        work_text, sub_offsets = sliced
+    scope_unresolved = False
 
-    if op.kind == "strike-insert":
-        new_work, ok = _norm_replace(work_text, op.needle, op.payload)
-        if not ok:
-            return body, False, f"needle not found: {_norm_ws(op.needle)[:60]!r}"
-    elif op.kind == "strike":
-        new_work, ok = _norm_replace(work_text, op.needle, "")
-        if not ok:
-            return body, False, f"needle not found: {_norm_ws(op.needle)[:60]!r}"
+    if op.target != block_target:
+        span = _corpus_span(op.target, body, resolve_scope)
+        if span is not None:
+            op.scope_source = "corpus"
+            work_text, sub_offsets = body[span[0]:span[1]], span
+        else:
+            sliced = _slice_for(op.target, body)
+            if sliced is not None:
+                op.scope_source = "sliced"
+                work_text, sub_offsets = sliced
+            elif op.kind not in ("strike-insert", "strike"):
+                return body, False, (
+                    f"couldn't locate {op.target} within {block_target}"
+                )
+            else:
+                # Neither corpus nor the slicer could delimit the scope.
+                # Fall back to the whole block, but demand a UNIQUE
+                # boundary-safe match: a needle occurring exactly once is
+                # in the named scope whether or not we could bound it.
+                op.scope_source = "unscoped"
+                scope_unresolved = True
+    else:
+        op.scope_source = "block" if body_is_exact else "ancestor"
+        if not body_is_exact:
+            # `body` is a wider section corpus fell back to, and neither
+            # corpus nor the slicer could find this block's own text
+            # inside it. A unique match is NOT enough here: the one
+            # occurrence may sit in a sibling subsection the bill never
+            # mentioned, and we have no way to tell. Decline.
+            return body, False, (
+                f"corpus has no row for {block_target} and its text could "
+                f"not be located in the enclosing section — refusing to "
+                f"apply {op.kind} against a scope we cannot delimit"
+            )
+
+    if op.kind in ("strike-insert", "strike"):
+        payload = op.payload if op.kind == "strike-insert" else ""
+        new_work, note = _resolve_strike(op, work_text, payload,
+                                         require_unique=scope_unresolved)
+        if new_work is None:
+            return body, False, note
     elif op.kind == "add-end":
         new_work = work_text.rstrip() + "\n\n" + op.payload
     elif op.kind == "insert-after":
@@ -1241,12 +1451,23 @@ class AppliedBlock:
 
 
 def apply_block(block: AmendmentBlock, corpus_body: str,
-                slice_for_target) -> AppliedBlock:
+                slice_for_target, *, resolve_scope=None,
+                body_is_exact: bool = True) -> AppliedBlock:
     """Apply an AmendmentBlock to a corpus body.
 
     `slice_for_target` is injected so this module doesn't import
     `amendments.py` directly (avoids cycles in some call paths). Caller
     passes a function `(body, citation) -> (slice_text, (start, end))`.
+
+    `resolve_scope(citation) -> str | None` should return the body of the
+    EXACT corpus row for that citation (None when corpus has no such
+    row). Supplying it lets the applier address subsections and
+    paragraphs by corpus path instead of re-deriving them from prose.
+
+    `body_is_exact` tells the applier whether `corpus_body` is genuinely
+    `block.target`'s text or an ancestor corpus fell back to. See
+    `apply_op` — the distinction decides whether an unscoped op may be
+    applied at all.
     """
     out = AppliedBlock(
         target=block.target,
@@ -1255,21 +1476,42 @@ def apply_block(block: AmendmentBlock, corpus_body: str,
         after_text=None,
     )
 
-    # Slice the block's target out of the corpus body.
-    sliced = slice_for_target(corpus_body, block.target)
-    if sliced and sliced[0]:
-        block_slice, block_offsets = sliced
-        out.before_text = block_slice
-    else:
-        # Block target is exactly the corpus row, OR slicer couldn't
-        # locate. Use the full body as our working scope.
+    # Narrow to the block's own target. When corpus already handed us
+    # that exact row there is nothing to narrow; otherwise try corpus
+    # for the row, then the marker heuristics.
+    block_scope_exact = body_is_exact
+    if body_is_exact:
         block_slice = corpus_body
-        block_offsets = (0, len(corpus_body))
-        out.before_text = corpus_body
+    else:
+        span = _corpus_span(block.target, corpus_body, resolve_scope)
+        if span is not None:
+            block_slice = corpus_body[span[0]:span[1]]
+            block_scope_exact = True
+        else:
+            sliced = slice_for_target(corpus_body, block.target)
+            if sliced and sliced[0]:
+                block_slice = sliced[0]
+                block_scope_exact = True
+                out.notes.append(
+                    f"scope for {block.target} came from marker heuristics, "
+                    f"not a corpus row"
+                )
+            else:
+                # No corpus row and no locatable slice: `corpus_body` is
+                # a wider section than the bill targets. Ops run against
+                # it only under the unique-match rule in apply_op.
+                block_slice = corpus_body
+                out.notes.append(
+                    f"corpus has no row for {block.target}; showing the "
+                    f"enclosing section"
+                )
+    out.before_text = block_slice
 
     current = block_slice
     for op in block.operations:
-        new_current, ok, note = apply_op(op, current, block.target)
+        new_current, ok, note = apply_op(
+            op, current, block.target,
+            resolve_scope=resolve_scope, body_is_exact=block_scope_exact)
         if ok:
             out.applied.append(op)
             current = new_current

@@ -1,11 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, type BillDetail } from "../lib/api";
+import {
+  api,
+  type BillDetail,
+  type BillDiffs as TBillDiffs,
+  type BillReconciliationRow,
+} from "../lib/api";
+import { OPEN_RECONCILIATION_EVENT } from "../lib/reconcile/schema";
 import { BillDiffs } from "../components/BillDiffs";
+import { BillReconciliation } from "../components/BillReconciliation";
 import { StatusBadge } from "../components/StatusBadge";
 import { fmtDate, KIND_LABEL } from "../lib/format";
 import { errorMessage } from "../lib/errors";
 import { retry } from "../lib/retry";
+
+// ReactFlow + dagre are the heaviest chunk in the app; only bills that
+// touch the encoded model ever show the Impact section, so the graph
+// component loads on demand.
+const BillImpactGraph = lazy(() => import("../components/BillImpactGraph"));
 
 // Turn GPO plain-text into proper paragraphs.
 //
@@ -120,16 +132,175 @@ function cleanBillText(raw: string): string {
     .join("\n\n");
 }
 
+// Collapsible "Impact" section: where the bill lands in the encoded
+// model's dependency graph. Diffs are fetched lazily on first expand
+// (they're a heavy JSONB column) and the graph component itself is
+// code-split via React.lazy above.
+function BillImpactSection({
+  bill,
+  reconciliations,
+}: {
+  bill: BillDetail;
+  reconciliations: BillReconciliationRow[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [diffs, setDiffs] = useState<TBillDiffs | null>(null);
+  const [err, setErr] = useState(false);
+  // Pending re-encode queue rows for this bill (written by the
+  // scrapers' trigger-encodes scan). Display-only: a small chip; a
+  // failed fetch degrades to "no chip", matching the matched-summary
+  // convention.
+  const [queuedCount, setQueuedCount] = useState(0);
+
+  useEffect(() => {
+    if (!open || diffs) return;
+    retry(() => api.billDiffs(bill.id))
+      .then(setDiffs)
+      .catch(() => setErr(true));
+  }, [open, diffs, bill.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setQueuedCount(0);
+    api
+      .encodeQueue(bill.id)
+      .then((rows) => {
+        if (cancelled) return;
+        setQueuedCount(rows.filter((r) => r.status === "pending").length);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [bill.id]);
+
+  return (
+    <section className="impact">
+      <div className="bill-text-header">
+        <h3>Impact on the encoded model</h3>
+        {queuedCount > 0 && (
+          <span
+            className="chip encode-queue-chip"
+            title="Citations awaiting a local axiom-encode run (trigger-encodes --run)"
+          >
+            {queuedCount} citation{queuedCount === 1 ? "" : "s"} queued for re-encode
+          </span>
+        )}
+        <button
+          className="bill-text-toggle"
+          onClick={() => setOpen((x) => !x)}
+          aria-expanded={open}
+        >
+          {open ? "Hide" : "Show"} impact graph
+        </button>
+      </div>
+      {!open && bill.matched_encodings.length > 0 ? (
+        // Discoverability: say what's inside before the section is
+        // expanded, so the collapsed header isn't a mystery box.
+        <p className="hint impact-teaser">
+          {bill.number} amends {bill.matched_encodings.length} encoded rule
+          file{bill.matched_encodings.length === 1 ? "" : "s"} (
+          {bill.matched_encodings
+            .slice(0, 3)
+            .map((e) => e.citation)
+            .join(", ")}
+          {bill.matched_encodings.length > 3 ? ", …" : ""}
+          ) — the graph shows where they sit in the encoded model.
+        </p>
+      ) : null}
+      {open && (
+        err ? (
+          <p className="error">Couldn’t load this bill’s section diffs.</p>
+        ) : !diffs ? (
+          <p className="hint">Loading…</p>
+        ) : (
+          <Suspense fallback={<p className="hint">Loading the graph view…</p>}>
+            <BillImpactGraph
+              bill={bill}
+              diffs={diffs}
+              reconciliations={reconciliations}
+            />
+          </Suspense>
+        )
+      )}
+    </section>
+  );
+}
+
+// Collapsible "Reconciliation" section: the agentic bill ↔ encoding
+// verdicts as a triage queue (same collapsible idiom as Impact). The
+// rows are fetched once by BillPage and shared with the impact graph's
+// verdict markers; the section only renders when verdicts exist. The
+// graph's "View in reconciliation" deep link targets
+// #bill-reconciliation — when the hash points here, the section opens
+// itself so the anchor scroll lands on visible content. hashchange
+// alone misses clicks when the hash is ALREADY #bill-reconciliation
+// (same-fragment navigation fires no event), so the anchor also
+// dispatches OPEN_RECONCILIATION_EVENT on every click.
+function BillReconciliationSection({ rows }: { rows: BillReconciliationRow[] }) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const openSection = () => setOpen(true);
+    const openOnHash = () => {
+      if (window.location.hash === "#bill-reconciliation") setOpen(true);
+    };
+    openOnHash();
+    window.addEventListener("hashchange", openOnHash);
+    window.addEventListener(OPEN_RECONCILIATION_EVENT, openSection);
+    return () => {
+      window.removeEventListener("hashchange", openOnHash);
+      window.removeEventListener(OPEN_RECONCILIATION_EVENT, openSection);
+    };
+  }, []);
+
+  return (
+    <section className="reconciliation" id="bill-reconciliation">
+      <div className="bill-text-header">
+        <h3>Reconciliation</h3>
+        <button
+          className="bill-text-toggle"
+          onClick={() => setOpen((x) => !x)}
+          aria-expanded={open}
+        >
+          {open ? "Hide" : "Show"} ({rows.length} section{rows.length === 1 ? "" : "s"})
+        </button>
+      </div>
+      {open && <BillReconciliation rows={rows} />}
+    </section>
+  );
+}
+
 export function BillPage() {
   const { billId = "" } = useParams();
   const [bill, setBill] = useState<BillDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [textOpen, setTextOpen] = useState(false);
   const [activeTextIdx, setActiveTextIdx] = useState(0);
+  const [recon, setRecon] = useState<BillReconciliationRow[]>([]);
 
   useEffect(() => {
     retry(() => api.bill(billId)).then(setBill).catch((e) => setErr(errorMessage(e)));
   }, [billId]);
+
+  // Reconciliation verdicts, fetched once and shared by two consumers:
+  // the triage section and the impact graph's contested markers. Only
+  // bills that touch the encoded model can have verdicts; a failed
+  // fetch degrades to "no verdicts" (section hidden, graph unmarked)
+  // rather than an error, matching the matched-summary convention.
+  useEffect(() => {
+    setRecon([]);
+    if (!bill || !(bill.touches_rulespec || bill.needs_new_encoding)) return;
+    let cancelled = false;
+    retry(() => api.billReconciliations(bill.id))
+      .then((rows) => {
+        if (!cancelled) setRecon(rows);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [bill]);
 
   // Whenever we navigate to a different bill, collapse the text panel
   // and reset to the newest version.
@@ -195,6 +366,14 @@ export function BillPage() {
       ) : null}
 
       <BillDiffs billId={bill.id} />
+
+      {(bill.touches_rulespec || bill.needs_new_encoding) && (
+        <BillImpactSection key={bill.id} bill={bill} reconciliations={recon} />
+      )}
+
+      {bill.touches_rulespec && recon.length > 0 && (
+        <BillReconciliationSection key={`recon-${bill.id}`} rows={recon} />
+      )}
 
       {bill.texts.length > 0 && (
         <BillTextSection

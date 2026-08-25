@@ -113,35 +113,50 @@ a:hover { color: var(--color-accent-hover); }
 
 .topbar {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   padding: 28px 0 18px;
   margin-bottom: 32px;
   border-bottom: 1px solid var(--color-rule);
 }
 
+.brand-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .brand {
   display: inline-flex;
-  align-items: flex-end;
-  gap: 0.5rem;
+  align-items: center;
   color: var(--color-ink);
 }
-/* Settled Axiom Foundation lockup (outlined-path SVG); sized to match the old
-   22px typed wordmark's optical height. */
+/* Settled Axiom Foundation lockup (outlined-path SVG). The uniform demo
+   header renders the product name via .brand-title, not a ::after tag. */
 .brand img {
   display: block;
-  height: 28px;
-  width: auto;
-}
-.brand::after {
-  content: "BILLS";
-  font-family: var(--f-mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  color: var(--color-ink-muted);
-  text-transform: uppercase;
+  width: 100px;
+  height: auto;
 }
 .brand:hover { color: var(--color-ink); }
+
+.brand-title {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  border-left: 1px solid var(--color-rule);
+  padding-left: 12px;
+}
+.brand-title,
+.brand-title:hover { color: var(--color-ink); }
+
+.brand-name {
+  font-family: var(--f-serif);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--color-ink);
+  line-height: 1.1;
+}
 
 .topbar nav { display: flex; gap: 22px; }
 .topbar nav a {
@@ -158,6 +173,9 @@ a:hover { color: var(--color-accent-hover); }
   color: var(--color-accent);
   border-bottom-color: var(--color-accent);
 }
+/* Uniform demo-header spec: All demos sits at 11px, otherwise inherits the
+   nav link treatment (mono, uppercase, muted; hover accent + underline rule). */
+.topbar nav a.all-demos { font-size: 11px; }
 
 main { min-height: 60vh; }
 
@@ -728,6 +746,13 @@ table.bills td a:hover { color: var(--color-accent); }
   font-size: 11px;
   font-family: var(--f-mono);
   letter-spacing: 0.04em;
+}
+
+/* Impact-header chip: pending re-encode queue rows for this bill. */
+.encode-queue-chip {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  white-space: nowrap;
 }
 
 .sponsors { list-style: none; padding: 0; margin: 0; }
@@ -1589,6 +1614,141 @@ table.bills td a:hover { color: var(--color-accent); }
   white-space: pre-wrap; word-break: break-word;
   font-family: "SF Mono", monospace; color: #1c1917;
 }
+/* Card rendering of the touched rules — replaces the raw-YAML dump in
+   the ~280px rail. Everything stacks vertically and wraps. */
+.rs-rule-cards {
+  display: grid;
+  gap: 8px;
+  background: #fdfcf7;
+  border: 1px solid #d8d4c8;
+  border-top: none;
+  padding: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.rs-rule-card {
+  background: #fff;
+  border: 1px solid #d8d4c8;
+  border-radius: 4px;
+  padding: 9px 10px;
+  display: grid;
+  gap: 7px;
+}
+.rs-rule-card-head {
+  display: grid;
+  gap: 4px;
+}
+.rs-rule-card-name {
+  font-family: "SF Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1c1917;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+.rs-rule-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.rs-rule-card-chip {
+  border: 1px solid #d8d4c8;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-style: normal;
+  color: #78716c;
+}
+.rs-rule-card-source {
+  margin: 0;
+  font-size: 11px;
+  color: #78716c;
+}
+.rs-rule-card-source code {
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.rs-atom-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.rs-atom {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border-left: 2px solid #d8d4c8;
+  background: #fdfcf7;
+}
+.rs-atom blockquote {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #44403c;
+  font-style: italic;
+}
+.rs-atom-kind {
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+.rs-atom--import {
+  border-left-color: #a8a29e;
+}
+.rs-atom--import code {
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+/* The bill's op strikes text inside this quote — the exact affected code. */
+.rs-atom--struck {
+  border-left-color: #92400e;
+  background: #fef3e2;
+}
+.rs-atom--struck .rs-atom-kind {
+  color: #92400e;
+}
+.rs-atom-struck-note {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #92400e;
+}
+.rs-rule-formula {
+  display: grid;
+  gap: 3px;
+}
+.rs-rule-formula-label {
+  margin: 0;
+  font-family: "SF Mono", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #78716c;
+}
+.rs-rule-formula pre {
+  margin: 0;
+  padding: 8px;
+  background: #1c1917;
+  color: #e7e5e4;
+  border-radius: 4px;
+  font-family: "SF Mono", monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.impact-teaser {
+  margin: 4px 0 0;
+}
+
 .rs-variant-todo {
   background: #fdfcf7; border: 1px solid #d8d4c8; border-top: none;
   padding: 10px 12px;
@@ -1709,6 +1869,876 @@ table.bills td a:hover { color: var(--color-accent); }
 }
 .yaml-diff .added   { background: #e9f5e0; }
 .yaml-diff .removed { background: #fde0d8; }
+
+/* ───────── bill impact graph (ReactFlow + dagre) ─────────
+   Ported from the guidance-impact-visualizer "Model impact" tab; colors
+   remapped onto this app's paper/ink/accent tokens. The bill layer gets
+   the amber highlight (same hue family as --color-accent, #92400e). */
+
+.impact { margin-top: 28px; }
+
+.impact-graph { margin-top: 14px; }
+.impact-graph-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.impact-graph-head .hint { margin: 0; }
+.impact-graph-head .filters { margin: 0; flex: none; }
+
+.impact-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  align-items: start;
+}
+.impact-canvas-wrap {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.impact-canvas {
+  position: relative;
+  height: 560px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+}
+.impact-canvas:focus-within,
+.impact-canvas:active { border-color: var(--color-rule-strong); }
+.impact-canvas--fullscreen { background: var(--color-paper); }
+
+.impact-fullscreen-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+}
+.impact-fullscreen-btn:hover {
+  color: var(--color-ink);
+  border-color: var(--color-rule-strong);
+}
+
+/* legend */
+.impact-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--color-ink-secondary);
+  font-size: 12px;
+}
+.impact-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.impact-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex: none;
+}
+.impact-swatch--baseline {
+  background: var(--color-rule);
+  border: 1.5px solid var(--color-rule-strong);
+}
+.impact-swatch--bill {
+  background: #fbbf24;
+  border: 1.5px solid var(--color-accent);
+}
+.impact-swatch--statute {
+  background: var(--color-ink);
+  border: 1.5px solid var(--color-ink);
+}
+.impact-swatch--placeholder {
+  background: var(--color-paper);
+  border: 1.5px dashed var(--color-rule-strong);
+}
+.impact-swatch--gap {
+  background: var(--color-accent-light);
+  border: 1.5px dashed var(--color-accent);
+}
+.impact-edge {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 2px solid var(--color-rule-strong);
+}
+.impact-edge--dashed { border-top-style: dashed; }
+
+/* section cards (custom React Flow nodes) */
+.rsNode {
+  width: 216px;
+  height: 76px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--color-rule-strong);
+  border-radius: 5px;
+  background: var(--color-rule);
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  cursor: pointer;
+  transition: box-shadow 140ms var(--ease-out), border-color 140ms var(--ease-out);
+}
+.rsNode:hover { box-shadow: 0 4px 14px -8px rgba(28, 25, 23, 0.55); }
+
+.rsNode-bill {
+  background: #fbbf24;
+  border-color: var(--color-accent);
+}
+.rsNode-statute {
+  background: var(--color-ink);
+  border-color: var(--color-ink);
+  border-width: 2px;
+}
+.rsNode-placeholder {
+  background: var(--color-paper);
+  border-style: dashed;
+}
+.rsNode-selected {
+  border-width: 2.5px;
+  border-color: var(--color-ink);
+  box-shadow: 0 0 0 3px rgba(28, 25, 23, 0.14);
+}
+.rsNode-statute.rsNode-selected {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(146, 64, 14, 0.25);
+}
+
+.rsNodeHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+}
+.rsNodeHead code {
+  font-family: var(--f-mono);
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+.rsNode-bill .rsNodeHead code { color: var(--color-accent-hover); }
+.rsNode-statute .rsNodeHead code { color: #fbbf24; }
+.rsNode-placeholder .rsNodeHead code { color: var(--color-ink-muted); }
+
+.rsGap {
+  margin-left: auto;
+  border: 1px dashed var(--color-accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: var(--f-mono);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-accent-hover);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.rsNodeLabel {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.76rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rsNodeMeta {
+  margin: 0;
+  color: var(--color-ink-secondary);
+  font-size: 0.64rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rsNode-statute .rsNodeLabel { color: var(--color-paper-elevated); }
+.rsNode-statute .rsNodeMeta { color: var(--color-rule); }
+.rsNode-placeholder .rsNodeLabel { color: var(--color-ink-secondary); }
+
+.rsHandle {
+  width: 5px;
+  height: 5px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+}
+
+/* edges */
+.react-flow__edge.rsEdge-baseline path.react-flow__edge-path {
+  stroke: var(--color-rule-strong);
+  stroke-width: 1.5;
+  opacity: 0.65;
+}
+.react-flow__edge.rsEdge-bill path.react-flow__edge-path {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+
+/* hover lineage: dim everything off the hovered node's path */
+.react-flow__node.rsDimmed { opacity: 0.16; transition: opacity 140ms var(--ease-out); }
+.react-flow__node.rsOnPath { opacity: 1; transition: opacity 140ms var(--ease-out); z-index: 2; }
+.react-flow__edge.rsDimmed { opacity: 0.1; transition: opacity 140ms var(--ease-out); }
+.react-flow__edge.rsOnPath { opacity: 1; transition: opacity 140ms var(--ease-out); }
+
+/* React Flow chrome, restyled to the app */
+.impact-canvas .react-flow__minimap {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+}
+.impact-canvas .react-flow__controls {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: none;
+}
+.impact-canvas .react-flow__controls-button {
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-paper-elevated);
+  color: var(--color-ink-secondary);
+}
+
+/* detail pane */
+.impact-detail {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+  max-height: 600px;
+  overflow-y: auto;
+}
+.impact-detail-empty {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  color: var(--color-ink-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.impact-detail-empty p { margin: 0; }
+.impact-detail-hint {
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.impact-detail-body {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+}
+.impact-detail-eyebrow {
+  margin: 0;
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+}
+.impact-detail-title {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.impact-detail-code {
+  justify-self: start;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+  border: 1px solid rgba(146, 64, 14, 0.2);
+  border-radius: 4px;
+  padding: 2px 6px;
+  overflow-wrap: anywhere;
+}
+.impact-detail-summary {
+  margin: 0;
+  color: var(--color-ink-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.impact-detail-link {
+  margin: 0;
+  font-size: 12.5px;
+}
+.impact-detail-block {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+.impact-detail-block-title {
+  margin: 0;
+  font-family: var(--f-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+}
+
+.impact-gap-card {
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px dashed rgba(146, 64, 14, 0.55);
+  border-radius: 4px;
+  background: var(--color-accent-light);
+}
+.impact-gap-card code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--color-accent-hover);
+  overflow-wrap: anywhere;
+}
+.impact-gap-card p {
+  margin: 0;
+  color: var(--color-ink-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.impact-rule-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+/* Rules whose source citation the bill's amendment covers — the code
+   the bill directly invalidates, set apart from the rest of the file. */
+.impact-detail-block-title--direct {
+  color: var(--color-accent-hover);
+}
+.impact-rule-list li.impact-rule--direct {
+  border-color: rgba(146, 64, 14, 0.55);
+  background: var(--color-accent-light);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+/* Neighbor lists: upstream consumers vs. dependencies. */
+.impact-neighbor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.impact-neighbor-list li {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper);
+}
+.impact-neighbor-list button {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+}
+.impact-neighbor-list button:hover code {
+  text-decoration: underline;
+}
+.impact-neighbor-list code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+.impact-neighbor-label {
+  color: var(--color-ink-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+.impact-via {
+  font-size: 10.5px;
+  color: var(--color-ink-muted);
+}
+.impact-via code {
+  font-size: 10px;
+}
+.impact-via--amended {
+  color: var(--color-accent-hover);
+  font-weight: 600;
+}
+.impact-rule-list li {
+  display: grid;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper);
+}
+.impact-rule-list code {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+.impact-rule-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.impact-rule-kind {
+  border: 1px solid var(--color-rule-strong);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: var(--f-mono);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-ink-muted);
+}
+.impact-rule-kind--parameter {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.impact-rule-source {
+  color: var(--color-ink-muted);
+  font-size: 10.5px;
+  font-family: var(--f-mono);
+}
+
+@media (max-width: 1120px) {
+  .impact-layout { grid-template-columns: 1fr; }
+  .impact-detail { max-height: none; }
+  .impact-canvas { height: 460px; }
+}
+@media (max-width: 560px) {
+  .impact-canvas { height: 380px; }
+}
+
+/* ───────── reconciliation triage ─────────
+   Ported from the guidance-impact-visualizer analysis tab; colors
+   remapped onto this app's paper/ink/accent tokens. Queue chips +
+   ranked listbox + two-layer detail pane. */
+
+.reconciliation { margin-top: 28px; }
+.recon { margin-top: 14px; }
+.recon-intro { margin: 0 0 12px; }
+.recon-meta {
+  font-family: var(--f-mono);
+  font-size: 0.72rem;
+  color: var(--color-ink-muted);
+}
+
+/* Queue filter chips with counts */
+.triageFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.triageFilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+  color: var(--color-ink-secondary);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out),
+    color 160ms var(--ease-out);
+}
+.triageFilter:hover:not(:disabled) {
+  border-color: rgba(146, 64, 14, 0.44);
+  color: var(--color-ink);
+}
+.triageFilter:disabled { opacity: 0.45; cursor: default; }
+.triageFilter.active {
+  border-color: rgba(146, 64, 14, 0.44);
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+.triageFilterDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.triageFilterDot.encode { background: var(--color-accent); }
+.triageFilterDot.legal { background: var(--color-error); }
+.triageFilterDot.clear { background: var(--color-success); }
+.triageFilterCount {
+  color: var(--color-ink-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.triageFilter.active .triageFilterCount { color: var(--color-accent); }
+
+/* Master–detail layout (same recipe as .impact-layout) */
+.triageLayout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.triageList {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  max-height: 640px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+.triageItem {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-rule);
+  border-left: 3px solid var(--color-rule-strong);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: border-color 160ms var(--ease-out), background 160ms var(--ease-out);
+}
+.triageItem:hover { border-color: var(--color-rule-strong); }
+.triageItem.selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+/* Status left borders come after .selected so the severity color always
+   wins on the left edge, even for the selected row. */
+.triageItem.aligned { border-left-color: var(--color-success); }
+.triageItem.adds-detail { border-left-color: var(--color-accent); }
+.triageItem.narrows { border-left-color: rgba(120, 113, 108, 0.6); }
+.triageItem.conflicts,
+.triageItem.missing { border-left-color: var(--color-error); }
+
+.triageItemHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.triageItemHead code {
+  font-family: var(--f-mono);
+  color: var(--color-accent);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+.triageItemTitle {
+  color: var(--color-ink);
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+.triageItemMeta {
+  color: var(--color-ink-muted);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+.triageItem.compact {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  padding: 7px 12px;
+}
+.triageItem.compact .triageItemTitle {
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+.triageGroupLabel {
+  margin: 6px 0 0;
+  font-family: var(--f-mono);
+  color: var(--color-ink-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Detail pane */
+.triageDetail {
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  background: var(--color-paper-elevated);
+  max-height: 640px;
+  overflow-y: auto;
+}
+.triageDetailBody {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.triageDetailBody .eyebrow { margin: 0; }
+.triageDetailTitle {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 1.05rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.triageDetailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Layer verdict blocks */
+.layerDetail {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px 12px 15px;
+  border: 1px solid var(--color-rule);
+  border-left: 3px solid var(--color-rule-strong);
+  border-radius: 4px;
+  background: var(--color-paper);
+}
+.layerDetail.aligned { border-left-color: var(--color-success); }
+.layerDetail.adds-detail { border-left-color: var(--color-accent); }
+.layerDetail.narrows { border-left-color: rgba(120, 113, 108, 0.6); }
+.layerDetail.conflicts,
+.layerDetail.missing { border-left-color: var(--color-error); }
+
+.layerDetailHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.layerDetailLabel {
+  font-family: var(--f-mono);
+  color: var(--color-ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.layerDetailTags {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.layerDivergence {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.layerDivergence.layerAligned {
+  color: var(--color-success);
+  font-weight: 650;
+}
+.layerDetailRationale {
+  margin: 0;
+  color: var(--color-ink-secondary);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.layerQuoteGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+}
+.layerQuote {
+  margin: 0;
+  padding: 9px 11px;
+  border-left: 2px solid var(--color-rule-strong);
+  border-radius: 3px;
+  background: var(--color-rule-subtle);
+  color: var(--color-ink-secondary);
+  font-family: var(--f-serif);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.layerQuote span {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--f-mono);
+  color: var(--color-ink-muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Verdict chips: routing (.actChip), status (.diffPill), materiality
+   (.matChip), confidence (.confChip), contested (.contestableTag). */
+.actChip,
+.matChip,
+.diffPill,
+.confChip,
+.contestableTag {
+  flex: none;
+  border: 1px solid var(--color-rule-strong);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: var(--f-mono);
+  color: var(--color-ink-muted);
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.actChip { background: var(--color-paper-elevated); white-space: normal; }
+.actChip.encode-in-model {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+}
+.actChip.legal-review {
+  border-color: rgba(153, 27, 27, 0.34);
+  color: var(--color-error);
+}
+.matChip.changes-eligibility {
+  border-color: rgba(153, 27, 27, 0.34);
+  color: var(--color-error);
+  background: rgba(153, 27, 27, 0.07);
+}
+.matChip.changes-state-duty {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.matChip.procedural,
+.matChip.cosmetic {
+  border-color: rgba(120, 113, 108, 0.38);
+  color: var(--color-ink-secondary);
+  background: rgba(120, 113, 108, 0.07);
+}
+.diffPill.aligned {
+  border-color: rgba(22, 101, 52, 0.3);
+  color: var(--color-success);
+  background: rgba(22, 101, 52, 0.07);
+}
+.diffPill.adds-detail {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.diffPill.narrows {
+  border-color: rgba(120, 113, 108, 0.4);
+  color: var(--color-ink-secondary);
+  background: rgba(120, 113, 108, 0.08);
+}
+.diffPill.conflicts,
+.diffPill.missing {
+  border-color: rgba(153, 27, 27, 0.34);
+  color: var(--color-error);
+  background: rgba(153, 27, 27, 0.07);
+}
+.confChip.medium {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.confChip.low {
+  border-color: rgba(153, 27, 27, 0.34);
+  color: var(--color-error);
+  background: rgba(153, 27, 27, 0.07);
+}
+.contestableTag {
+  border-color: rgba(146, 64, 14, 0.32);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+
+.ambiguityNote {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(146, 64, 14, 0.28);
+  border-radius: 4px;
+  background: var(--color-accent-light);
+}
+.ambiguityNote span {
+  font-family: var(--f-mono);
+  color: var(--color-accent);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.ambiguityNote p {
+  margin: 0;
+  color: var(--color-ink-secondary);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Contested marker on graph nodes + one-line verdict in the graph's
+   detail pane, deep-linking down to the reconciliation section. */
+.rsContested {
+  color: var(--color-accent-hover);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.rsNode-statute .rsContested { color: #fbbf24; }
+.impact-legend-mark {
+  color: var(--color-accent);
+  font-weight: 700;
+}
+.impact-verdict {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 1120px) {
+  .triageLayout { grid-template-columns: 1fr; }
+  .triageList,
+  .triageDetail { max-height: none; overflow-y: visible; }
+}
+@media (max-width: 720px) {
+  .layerQuoteGrid { grid-template-columns: 1fr; }
+}
 
 /* ───────── table scroll wrapper ─────────
    Wraps the bills table so that, when it can't fit the viewport, the

@@ -164,11 +164,16 @@ def _index_rules(conn, encoding_id: str, yaml_doc: dict,
             src = atom.get("source") or {}
             if not isinstance(src, dict):
                 continue
-            text = src.get("text")
+            # The encoder has emitted the verbatim quote under two keys
+            # over time: older files use source.text, current output
+            # uses source.excerpt. Accept both (text wins when both are
+            # present) — dropping excerpt-format atoms silently blinded
+            # the bill-overlap match for newer rulespec files.
+            text = src.get("text") or src.get("excerpt")
             corpus_path = src.get("corpus_citation_path") or default_corpus_path
             # Skip atoms with no quoted text — they exist (e.g. when the
-            # atom is just a citation pointer) but contribute nothing to
-            # the bill-overlap match.
+            # atom is just a citation pointer, or an import) but
+            # contribute nothing to the bill-overlap match.
             if not text:
                 continue
             conn.execute(

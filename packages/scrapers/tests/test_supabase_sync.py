@@ -59,6 +59,40 @@ def test_send_with_retry_does_not_retry_4xx(monkeypatch) -> None:
     assert calls["n"] == 1  # 400 is a real error, fail fast
 
 
+def test_tolerate_missing_table_skips_undefined_remote_relation(capsys) -> None:
+    # The newer tables ship as manually-pasted supabase migrations; a
+    # project that hasn't applied them yet must get a warning naming the
+    # migration file, not a failed nightly sync.
+    def step():
+        raise RuntimeError(
+            "Supabase write to encoding_graphs failed (404): "
+            '{"code":"PGRST205","message":"Could not find the table '
+            "'bills.encoding_graphs' in the schema cache\"}"
+        )
+
+    written = supabase_sync._tolerate_missing_table(
+        step,
+        table="encoding_graphs",
+        migration="20260721000000_encoding_graphs.sql",
+    )
+    assert written == 0
+    err = capsys.readouterr().err
+    assert "encoding_graphs" in err
+    assert "supabase/migrations/20260721000000_encoding_graphs.sql" in err
+
+
+def test_tolerate_missing_table_reraises_other_errors() -> None:
+    def step():
+        raise RuntimeError("Supabase write to encode_queue failed (500): boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        supabase_sync._tolerate_missing_table(
+            step,
+            table="encode_queue",
+            migration="20260721130000_encode_queue.sql",
+        )
+
+
 def test_remote_bill_ids_looks_up_by_jurisdiction_only(monkeypatch) -> None:
     # Must query by the indexed `jurisdiction` column, never the unindexed
     # `session_id` (which seq-scanned and timed out as the table grew).

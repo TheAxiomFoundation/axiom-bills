@@ -29,7 +29,6 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
     return { filtered: yamlText, total: 0, shown: 0, fallback: false };
   }
 
-  const preamble = lines.slice(0, rulesLineIdx + 1).join("\n");
   const afterRules = lines.slice(rulesLineIdx + 1);
 
   // Top-level rule entries start with `- name:`. Two YAML conventions:
@@ -57,8 +56,12 @@ export function sliceRulesBySource(yamlText: string, citation: string): SlicedYa
   if (kept.length === 0) {
     return { filtered: yamlText, total, shown: total, fallback: true };
   }
+  // The filtered view starts straight at `rules:` — the module preamble
+  // (format, proof_validation, deferred_outputs prose, summary) can run
+  // to dozens of lines and buries the one rule the reader came for.
+  // "Show full file" still renders the original text with the preamble.
   return {
-    filtered: preamble + "\n" + kept.join("\n").trimEnd() + "\n",
+    filtered: "rules:\n" + kept.join("\n").trimEnd() + "\n",
     total,
     shown: kept.length,
     fallback: false,

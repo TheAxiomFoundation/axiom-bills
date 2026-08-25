@@ -71,7 +71,10 @@ USC_CITATION_RE = re.compile(
     # `2 USC 168a`, `42 USC 300hh-14`, etc. The amendment-block
     # parser produces these forms; the path normalizer must match.
     r"^(?P<title>\d+)\s+USC\s+"
-    r"(?P<section>\d+[a-zA-Z]{0,3}(?:-\d+[a-zA-Z]{0,3})?)"
+    # Corpus renders the suffix separator as an en dash in places
+    # ("1396u\u20131"), so accept the whole hyphen/dash family — a citation
+    # we cannot parse here never reaches corpus at all.
+    r"(?P<section>\d+[a-zA-Z]{0,3}(?:[-\u2010-\u2015]\d+[a-zA-Z]{0,3})?)"
     r"(?P<sub>(?:\([^)]+\))*)$"
 )
 CFR_CITATION_RE = re.compile(

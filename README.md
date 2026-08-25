@@ -17,7 +17,12 @@ axiom-bills/
     axiom_bills.sqlite   # created by `make migrate`
 ```
 
-## Jurisdictions in the prototype
+## Jurisdictions
+
+The CLI registry (`axiom-bills list`) wires the federal scraper plus 51
+state-level jurisdictions — all 50 states and DC — each with its own
+scraper, status vocabulary, kind classifier, and citation extractor. A
+sample of the sources (the registry in `cli.py` is authoritative):
 
 | Code    | Source                        | Status      |
 |---------|-------------------------------|-------------|
@@ -143,13 +148,31 @@ list/structural changes get an LLM-drafted proposal
 
 ```
 index-encodings --repo ~/rulespec-us   # rulespec inventory → axiom_encodings
+precompute-graph --repo ~/rulespec-us  # rulespec dependency graph → encoding_graphs
 fetch-texts / precompute-diffs         # bill text → parsed ops (bills.diffs)
+trigger-encodes -j us                  # staleness signals → encode_queue (enqueue-only)
 precompute-variants                    # ops × encodings → rule_variants
 hydrate-variants                       # reuse prior LLM proposals from Supabase
 propose-llm-variants                   # draft the rest via Claude
+hydrate-reconciliations                # reuse prior verdicts from Supabase
+reconcile -j us                        # agentic bill↔encoding verdicts → bill_reconciliations
 sync-supabase                          # push everything up
 export-variants --out ./patches        # patched YAML + manifest for downstream
 ```
+
+`fetch-texts` prefers HTML > XML > TXT > PDF; PDF text **is** fetched
+(extracted via pypdf — scanned/encrypted PDFs are skipped).
+
+`precompute-graph` snapshots the rulespec module dependency graph
+(imports, proof-atom imports, formula references) that the web app's
+Impact tab renders, with the bill's touched sections overlaid.
+
+`reconcile` (needs `ANTHROPIC_API_KEY`) produces two enum-constrained
+verdicts per touched section — billVsLaw (is the change substantive?)
+and modelVsLaw (would the encoding be wrong post-enactment?) — that
+drive the web app's triage view. `hydrate-reconciliations` runs first
+in CI so unchanged sections reuse stored verdicts instead of
+re-spending tokens.
 
 The loop is *iterative*: each variant row stores a fingerprint of the
 ops + baseline it was computed from (`source_ops_fingerprint`) and the
@@ -162,6 +185,46 @@ The hourly federal refresh workflow runs the whole chain (it checks out
 rulespec-us and indexes it each run). Downstream consumers read the
 `bills.current_rule_patches` view in Supabase (latest patched YAML per
 bill/file with bill status attached) or use `export-variants` locally.
+
+## Closing the loop: the encode queue
+
+`trigger-encodes` materializes the re-encode queue (`encode_queue`, one
+row per bill × citation × reason) from three staleness signals:
+
+- `needs_new_encoding` — a bill adds provisions inside an encoded
+  program area that no rule file covers yet (encoder backlog);
+- `stale_variant` — a bill's ops fingerprint changed and superseded a
+  previously drafted LLM variant;
+- `enacted_touch` — an enacted/signed bill amends an encoded file, so
+  the baseline encoding itself is stale.
+
+Rows are enqueue-once: a later scan never resurrects an existing row,
+so a dismissed row stays dismissed. CI runs the enqueue-only scan
+hourly; the pending count surfaces on the bill page ("N citations
+queued for re-encode").
+
+Running the queue is local and human-gated:
+
+```bash
+export AXIOM_CORPUS_PATH=~/axiom-corpus          # axiom-corpus clone
+export AXIOM_POLICY_REPO_PATH=~/rulespec-us      # rulespec clone
+export AXIOM_RULES_ENGINE_PATH=~/axiom-rules-engine
+axiom-bills trigger-encodes -j us --run --limit 3
+```
+
+Each pending row shells out to `axiom-encode encode "<citation>" …`
+(validate-only — never `--apply`; applying needs the signing supervisor)
+with output under `$AXIOM_ENCODE_OUTPUT` or
+`~/.axiom-bills/encode-runs/<queue-id>`, and records ran/failed plus the
+exit code, output dir, and a stderr tail on the row.
+
+**Manual prerequisite for enacted bills**: the encoder reads signed
+axiom-corpus releases — it cannot consume bill text directly. The loop
+for an enacted bill is: bill enacted → axiom-corpus ingests the amended
+law text → a signed corpus release ships → the encode toolchain re-pins
+to it → run the queue. Until the corpus catches up, an `enacted_touch`
+run re-encodes against pre-enactment law and is only useful as a
+baseline check.
 
 ## How a scrape works
 
@@ -193,10 +256,11 @@ mapping per state — that's what determines when Pipeline B fires the
 
 ## Status
 
-Prototype. Federal + NY work end-to-end. CO + MN have status
-vocabularies done and tested but their `scrape()` methods return empty
-results. Schema and scraper base class are stable enough that adding a
-5th jurisdiction is a single-file change.
+Prototype, but broad: the registry wires federal plus all 51
+state-level jurisdictions (50 states + DC), and the hourly federal
+refresh runs the full encoding loop in CI. Schema and scraper base
+class are stable enough that tuning a jurisdiction is a per-directory
+change under `jurisdictions/<code>/`.
 
 For background on where this slots into the broader Axiom auto-update
 layer, see the design conversation in the architecture notes (Pipelines
