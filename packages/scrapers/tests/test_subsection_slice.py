@@ -379,3 +379,94 @@ def test_an_ambiguous_marker_does_not_close_a_deeper_span():
     assert got is not None
     assert "Property other than certain personal property" in got, got[:70]
     assert "Mining costs" not in got
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Sequence-aware depth resolution
+#
+#  Label alone cannot place a roman letter, and guessing wrong costs a
+#  boundary in one direction or the other: read "(c)" after subsection
+#  "(b)" as a clause and (b)'s slice runs to the end of the section;
+#  read a clause "(i)" inside a paragraph as a subsection and that
+#  paragraph is truncated at its first clause. Which sequence the label
+#  continues settles it.
+# ────────────────────────────────────────────────────────────────────
+
+from axiom_bills._common.amendments import (  # noqa: E402
+    _continues_sequence,
+    _resolve_depths,
+)
+
+
+def test_sequence_continuation_by_level():
+    assert _continues_sequence("b", "c", 0)      # subsections b -> c
+    assert _continues_sequence("h", "i", 0)      # a real subsection (i)
+    assert not _continues_sequence("a", "i", 0)  # (i) is not next after (a)
+    assert _continues_sequence(None, "i", 3)     # opens a clause list
+    assert _continues_sequence("i", "ii", 3)
+    assert _continues_sequence("1", "2", 1)
+    assert _continues_sequence("A", "B", 2)
+    assert not _continues_sequence("1", "3", 1)  # a skip is not succession
+
+
+def test_sibling_subsection_closes_the_previous_one():
+    """(c) and (d) are roman letters; treating them as clauses left
+    subsection (b) running to the end of the section."""
+    body = (
+        "(a) First The first rule applies.\n\n"
+        "(b) Second The second rule applies.\n\n"
+        "(c) Third The third rule applies.\n\n"
+        "(d) Fourth The fourth rule applies."
+    )
+    got, _ = slice_subsection(body, "12 USC 999(b)")
+    assert got is not None
+    assert "second rule" in got
+    assert "third rule" not in got, "swallowed sibling (c)"
+    assert "fourth rule" not in got, "swallowed sibling (d)"
+
+
+def test_clause_inside_a_paragraph_does_not_close_it():
+    body = (
+        "(a) Adjustments (1) Depreciation (A) In general "
+        "(i) Property other than personal property is depreciated. "
+        "(ii) Other property is excluded.\n\n"
+        "(2) Mining costs The amount shall be capitalized."
+    )
+    got, _ = slice_subsection(body, "26 USC 56(a)(1)")
+    assert got is not None
+    assert "Property other than personal property" in got
+    assert "Mining costs" not in got
+
+
+def test_a_stray_marker_does_not_close_an_enclosing_span():
+    """A marker continuing no sequence is likelier stray text than a new
+    sibling — a spurious "(d)" between paragraphs (7) and (8) used to end
+    subsection (a) and lose every paragraph after it."""
+    body = (
+        "(a) Rules (1) first. (2) second. (3) third. (4) fourth. "
+        "(5) fifth. (6) sixth. (7) seventh, see note (d) below. "
+        "(8) eighth. (9) ninth."
+    )
+    for num, want in [("8", "eighth"), ("9", "ninth")]:
+        got, _ = slice_subsection(body, f"7 USC 2023(a)({num})")
+        assert got is not None, num
+        assert want in got, (num, got[:50])
+
+
+def test_resolution_uses_one_marker_of_lookahead():
+    """Continuity alone can be fooled: a stray "(c)" deep inside
+    subsection (b) does continue a, b, c. Reading it as a subsection
+    strands the "(B)" after it, which was continuing (A)."""
+    markers = [
+        ((0,), 0, 3, "a"),
+        ((0,), 10, 13, "b"),
+        ((1,), 20, 23, "1"),
+        ((2,), 30, 33, "A"),
+        ((3, 0), 40, 43, "i"),
+        ((3,), 50, 54, "ii"),
+        ((3, 0), 60, 63, "c"),      # stray, but continues a/b/c
+        ((4, 2), 70, 73, "B"),      # really continues (A)
+    ]
+    resolved = _resolve_depths(markers)
+    assert resolved[6] != 0, "stray (c) read as a new subsection"
+    assert resolved[7] == 2, "the (B) continuing (A) was stranded"

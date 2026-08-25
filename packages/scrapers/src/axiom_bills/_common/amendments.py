@@ -508,6 +508,103 @@ def _candidate_depths(marker: str, prev_depth: int,
     return (0,)
 
 
+_ROMAN_VALUES = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+
+
+def _roman_to_int(label: str) -> int | None:
+    total = 0
+    highest = 0
+    for ch in reversed(label.lower()):
+        value = _ROMAN_VALUES.get(ch)
+        if value is None:
+            return None
+        total = total - value if value < highest else total + value
+        highest = max(highest, value)
+    return total or None
+
+
+def _label_ordinal(label: str, depth: int) -> int | None:
+    """Position of `label` within the sequence used at `depth`."""
+    if depth == 1:                                  # paragraphs: 1, 2, 3
+        return int(label) if label.isdigit() else None
+    if depth in (0, 2):                             # subsections / subparagraphs
+        if len(label) == 1 and label.isalpha():
+            return ord(label.lower()) - ord("a") + 1
+        return None
+    return _roman_to_int(label)                     # clauses / subclauses
+
+
+def _continues_sequence(prev_label: str | None, label: str, depth: int) -> bool:
+    """Would `label` be the next item at `depth`?
+
+    Immediate succession, not merely "later": a clause "(i)" appearing
+    while subsection "(a)" is open is later than 'a' alphabetically, but
+    it is not 'b', so it does not read as the next subsection.
+    """
+    n = _label_ordinal(label, depth)
+    if n is None:
+        return False
+    if prev_label is None:
+        return n == 1                               # opens the sequence
+    prev = _label_ordinal(prev_label, depth)
+    return prev is not None and n == prev + 1
+
+
+def _resolve_depths(structural):
+    """Pick one depth per marker, using label-sequence continuity.
+
+    The roman letters are ambiguous by label alone, and picking wrong in
+    either direction costs a boundary. Reading "(c)" after subsection
+    "(b)" as a clause leaves subsection (b)'s slice running to the end of
+    the section; reading a clause "(i)" inside a paragraph as a new
+    subsection truncates that paragraph at its first clause. Sequence
+    continuity separates them: "(c)" follows "(b)" at subsection level,
+    while "(i)" opens a clause list and follows nothing at subsection
+    level. Where neither reading fits, we keep the label-based guess.
+    """
+    last: dict[int, str] = {}
+    resolved: list[int] = []
+
+    def advance(state: dict[int, str], depth: int, lab: str) -> dict[int, str]:
+        nxt = {d: v for d, v in state.items() if d <= depth}
+        nxt[depth] = lab
+        return nxt
+
+    for idx, (depths, _start, _end, label) in enumerate(structural):
+        # Where a reading continues a sequence, take it. Where none does,
+        # take the DEEPEST reading: a marker that continues nothing is
+        # more likely stray text than a new sibling, and treating it as a
+        # sibling would close whatever span encloses it. A spurious "(d)"
+        # between paragraphs (7) and (8) ended subsection (a) and lost
+        # every paragraph after it.
+        chosen = next((d for d in depths
+                       if _continues_sequence(last.get(d), label, d)),
+                      max(depths))
+
+        # Continuity alone can be fooled: a stray "(c)" deep inside
+        # subsection (b) does continue a, b, c at subsection level. Look
+        # one marker ahead — reading it as a subsection strands the "(B)"
+        # that follows, which was continuing (A) two levels down, whereas
+        # the deeper reading leaves that sequence intact.
+        if len(depths) > 1 and idx + 1 < len(structural):
+            ahead_depths, _, _, ahead_label = structural[idx + 1]
+
+            def keeps_the_thread(d: int) -> bool:
+                state = advance(last, d, label)
+                return any(_continues_sequence(state.get(a), ahead_label, a)
+                           for a in ahead_depths)
+
+            if not keeps_the_thread(chosen):
+                better = next((d for d in depths
+                               if d != chosen and keeps_the_thread(d)), None)
+                if better is not None:
+                    chosen = better
+
+        resolved.append(chosen)
+        last = advance(last, chosen, label)
+    return resolved
+
+
 def _is_cross_reference(text: str, pos: int) -> bool:
     """Backup heuristic: is the marker at `pos` a cross-reference?
 
@@ -679,7 +776,8 @@ def slice_subsection(section_body: str, citation: str) -> tuple[str | None, tupl
     # instead of being matched against a precomputed absolute depth per
     # citation level. Absolute matching demanded the classifier and the
     # citation agree exactly, and an off-by-one anywhere meant no slice.
-    found = _descend_marker_chain(structural, levels, len(section_body))
+    found = _descend_marker_chain(structural, levels, len(section_body),
+                                  _resolve_depths(structural))
     if found is None:
         return None, None
 
@@ -687,7 +785,7 @@ def slice_subsection(section_body: str, citation: str) -> tuple[str | None, tupl
     return section_body[slice_start:slice_end], (slice_start, slice_end)
 
 
-def _descend_marker_chain(structural, levels, body_len):
+def _descend_marker_chain(structural, levels, body_len, resolved):
     """Find the span of `levels` (e.g. ['b', '6']) in a marker list.
 
     Returns (start, end) of the deepest level's text, or None.
@@ -723,16 +821,16 @@ def _descend_marker_chain(structural, levels, body_len):
         def span_end(i: int, depth: int, limit: int) -> int:
             """Where the marker at `i`, read at `depth`, stops."""
             for j in range(i + 1, n):
-                depths, start, _, _ = structural[j]
+                _depths, start, _, _ = structural[j]
                 if start >= limit:
                     break
-                # A later marker closes the span only when EVERY reading
-                # of it is a sibling or shallower — in both passes. An
-                # ambiguous "(i)" sitting inside a paragraph is far more
-                # likely a clause within it than a new subsection, and
-                # closing on its shallow reading truncated the paragraph
-                # right where its first clause began.
-                if max(depths) <= depth:
+                # Close on the marker's RESOLVED depth. Taking the
+                # shallowest reading truncated a paragraph at its first
+                # clause; taking the deepest never closed a subsection
+                # whose sibling happened to be a roman letter, so "(b)"
+                # ran on through (c) and (d) to the end of the section.
+                # Sequence continuity tells the two apart.
+                if resolved[j] <= depth:
                     return start
             return limit
 

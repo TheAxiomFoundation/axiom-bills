@@ -47,23 +47,29 @@ FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "slicer_cases.json.gz"
 # resolve, the sample is close to the population.
 #
 # Measured at the time of writing (1816 cases):
-#   overall     99.78% correct, 0.11% wrong, 0.11% miss
-#   subsection  99.81% correct
-#   paragraph   99.77% correct
+#   overall     99.72% correct, 0.11% wrong, 0.17% miss
+#   of the correct slices, 4.91% are over-long
 #
-# The four residual failures are believed irreducible by lexical rules:
-# three are comma-joined chains whose label classes match, so nothing in
-# the text distinguishes "another reference" from "the next structural
-# marker" ("...under paragraph (1), and (3) in any other case"); the
-# fourth is a section that genuinely carries two subsections designated
-# (e), as an editorial note in the statute itself points out.
+# "Correct" here means the slice contains the provision's real text.
+# That is not the same as being the right span, which is why over-long
+# is tracked separately and has its own ceiling — an earlier version of
+# this file scored 99.78% while 14% of its slices ran past their sibling
+# boundary, and nothing in the numbers showed it.
 #
-# Floors sit just under those. Update them when a change legitimately
-# moves the numbers — and say which change, in the commit message.
+# The residual failures are believed irreducible by lexical rules.
+# Comma-joined chains whose label classes match give the text no way to
+# distinguish "another reference" from "the next structural marker"
+# ("...under paragraph (1), and (3) in any other case"). Two are
+# sections that carry two subsections under the same letter, as
+# editorial notes in the statutes themselves point out.
+#
+# Floors sit just under the measurements. Update them when a change
+# legitimately moves the numbers — and say which change, in the commit.
 MIN_CORRECT_OVERALL = 0.99
 MAX_WRONG_OVERALL = 0.002
 MIN_CORRECT_SUBSECTION = 0.99
 MIN_CORRECT_PARAGRAPH = 0.99
+MAX_OVER_LONG = 0.06
 
 # Sections a specific bug turned on. The fixture must never lose them,
 # whatever a future refresh samples.
@@ -86,21 +92,41 @@ def corpus_cases(corpus_cases_full):
     return corpus_cases_full["sections"], corpus_cases_full["cases"]
 
 
-def _score(sections, cases):
-    correct = wrong = miss = 0
-    failures = []
+def _by_section(cases):
+    grouped = {}
     for c in cases:
-        body = sections[c["s"]]
-        got, offsets = slice_subsection(body, c["cit"])
-        if got is None:
-            miss += 1
-            failures.append(("MISS", c["cit"]))
-        elif c["want"][:60] in _norm(got):
-            correct += 1
-        else:
-            wrong += 1
-            failures.append(("WRONG", c["cit"]))
-    return correct, wrong, miss, failures
+        grouped.setdefault(c["s"], []).append(c)
+    return grouped
+
+
+def _outcome(sections, case, siblings):
+    """One of ok / over / wrong / miss.
+
+    "over" is a slice that contains the right text but runs past its
+    sibling boundary. It has to be its own class: a containment check
+    scores it correct, which is how 14% of slices came to over-run while
+    the headline accuracy went up.
+    """
+    got, _ = slice_subsection(sections[case["s"]], case["cit"])
+    if got is None:
+        return "miss"
+    flat = _norm(got)
+    if case["want"][:60] not in flat:
+        return "wrong"
+    for other in siblings:
+        if (other["cit"] != case["cit"]
+                and other["tier"] == case["tier"]
+                and other["want"][:60] in flat):
+            return "over"
+    return "ok"
+
+
+def _score(sections, cases):
+    grouped = _by_section(cases)
+    tally = {"ok": 0, "over": 0, "wrong": 0, "miss": 0}
+    for c in cases:
+        tally[_outcome(sections, c, grouped[c["s"]])] += 1
+    return tally
 
 
 def test_no_case_that_worked_stops_working(corpus_cases):
@@ -117,15 +143,18 @@ def test_no_case_that_worked_stops_working(corpus_cases):
     access) then tightens the pin.
     """
     sections, cases = corpus_cases
+    grouped = _by_section(cases)
+    # A case pinned tight must stay tight; one pinned over-long may
+    # tighten but must not degrade further.
+    allowed = {"ok": {"ok"}, "over": {"ok", "over"}}
     broke = []
     for c in cases:
-        if c.get("expect") != "ok":
+        permitted = allowed.get(c.get("expect"))
+        if permitted is None:
             continue
-        got, _ = slice_subsection(sections[c["s"]], c["cit"])
-        if got is None:
-            broke.append(f"{c['cit']} ok -> MISS")
-        elif c["want"][:60] not in _norm(got):
-            broke.append(f"{c['cit']} ok -> WRONG")
+        now = _outcome(sections, c, grouped[c["s"]])
+        if now not in permitted:
+            broke.append(f"{c['cit']} {c['expect']} -> {now.upper()}")
     assert not broke, (
         f"{len(broke)} slices that used to be correct no longer are:\n  "
         + "\n  ".join(broke[:25])
@@ -137,14 +166,13 @@ def test_no_new_silently_misscoped_slices(corpus_cases):
     edits inside the wrong provision and still reports success. The set
     of wrong citations must not grow."""
     sections, cases = corpus_cases
+    grouped = _by_section(cases)
     known = {c["cit"] for c in cases if c.get("expect") == "wrong"}
-    new_wrong = []
-    for c in cases:
-        got, _ = slice_subsection(sections[c["s"]], c["cit"])
-        if got is None or c["want"][:60] in _norm(got):
-            continue
-        if c["cit"] not in known:
-            new_wrong.append(c["cit"])
+    new_wrong = [
+        c["cit"] for c in cases
+        if _outcome(sections, c, grouped[c["s"]]) == "wrong"
+        and c["cit"] not in known
+    ]
     assert not new_wrong, (
         "new silently mis-scoped slices — these edit provisions the bill "
         f"never named:\n  " + "\n  ".join(new_wrong[:25])
@@ -159,7 +187,7 @@ def test_fixture_is_usable(corpus_cases):
     for c in cases:
         assert c["want"], c["cit"]
         assert 0 <= c["s"] < len(sections)
-        assert c.get("expect") in {"ok", "miss", "wrong"}, c["cit"]
+        assert c.get("expect") in {"ok", "over", "miss", "wrong"}, c["cit"]
 
 
 def test_sentinel_sections_are_present(corpus_cases_full):
@@ -175,13 +203,30 @@ def test_sentinel_sections_are_present(corpus_cases_full):
     )
 
 
+def test_slices_are_tight_not_merely_containing(corpus_cases):
+    """A slice that runs past its sibling boundary is a real defect: an
+    amendment applied inside it can edit the swallowed sibling. Because
+    containment scores it correct, it needs its own ceiling."""
+    sections, cases = corpus_cases
+    tally = _score(sections, cases)
+    found = tally["ok"] + tally["over"]
+    ratio = tally["over"] / found
+    assert ratio <= MAX_OVER_LONG, (
+        f"over-long slices rose to {ratio:.2%} (ceiling {MAX_OVER_LONG:.0%}) "
+        f"— {tally['over']} of {found} contain a sibling's text"
+    )
+
+
 def test_overall_accuracy_against_corpus(corpus_cases):
     sections, cases = corpus_cases
-    correct, wrong, miss, failures = _score(sections, cases)
+    tally = _score(sections, cases)
     total = len(cases)
+    correct = tally["ok"] + tally["over"]
+    wrong, miss = tally["wrong"], tally["miss"]
     report = (
         f"\n  cases   {total}"
         f"\n  correct {correct} ({correct / total:.2%})"
+        f"\n    of which over-long {tally['over']}"
         f"\n  WRONG   {wrong} ({wrong / total:.2%})"
         f"\n  MISS    {miss} ({miss / total:.2%})"
     )
@@ -205,12 +250,13 @@ def test_accuracy_per_depth(corpus_cases, tier, floor):
     sections, cases = corpus_cases
     tier_cases = [c for c in cases if c["tier"] == tier]
     assert tier_cases, tier
-    correct, wrong, miss, _ = _score(sections, tier_cases)
+    tally = _score(sections, tier_cases)
+    correct = tally["ok"] + tally["over"]
     ratio = correct / len(tier_cases)
     assert ratio >= floor, (
         f"{tier} accuracy {ratio:.2%} below {floor:.0%} "
-        f"({correct} correct / {wrong} wrong / {miss} miss "
-        f"of {len(tier_cases)})"
+        f"({correct} correct / {tally['wrong']} wrong / "
+        f"{tally['miss']} miss of {len(tier_cases)})"
     )
 
 

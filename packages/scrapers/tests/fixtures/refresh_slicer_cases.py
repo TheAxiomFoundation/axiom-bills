@@ -166,6 +166,31 @@ def collect() -> tuple[list[str], list[dict]]:
     return bodies, paths, cases
 
 
+def _outcome(body: str, case: dict, siblings: list[dict]) -> str:
+    """Pin one case's result as of generation.
+
+    Four classes, because "contains the right text" is not the same as
+    "is the right span". A slice that runs past its sibling boundary
+    still contains what was asked for, so a containment check scores it
+    correct — which is how 14% of slices came to over-run without the
+    accuracy number moving at all.
+    """
+    from axiom_bills._common.amendments import slice_subsection
+
+    got, _ = slice_subsection(body, case["cit"])
+    if got is None:
+        return "miss"
+    flat = _norm(got)
+    if case["want"][:60] not in flat:
+        return "wrong"
+    for other in siblings:
+        if (other["cit"] != case["cit"]
+                and other["tier"] == case["tier"]
+                and other["want"][:60] in flat):
+            return "over"
+    return "ok"
+
+
 def curate(bodies: list[str], paths: list[str],
            cases: list[dict]) -> tuple[list[str], list[str], list[dict]]:
     """Keep the sections that carry signal per byte."""
@@ -187,17 +212,7 @@ def curate(bodies: list[str], paths: list[str],
         mine = per_section.get(i, [])
         fails = 0
         for c in mine:
-            got, _ = slice_subsection(body, c["cit"])
-            # Pin the outcome as of generation. The test asserts that no
-            # case recorded "ok" ever stops being ok — an aggregate
-            # threshold cannot see a three-case regression, and a
-            # three-case regression is exactly what slipped through once.
-            if got is None:
-                c["expect"] = "miss"
-            elif c["want"][:60] in _norm(got):
-                c["expect"] = "ok"
-            else:
-                c["expect"] = "wrong"
+            c["expect"] = _outcome(body, c, mine)
             if c["expect"] != "ok":
                 fails += 1
         if fails or TRICKY_RE.search(body):
@@ -212,11 +227,9 @@ def curate(bodies: list[str], paths: list[str],
     for i in keep:
         if paths[i] not in SENTINEL_PATHS:
             continue
-        for c in per_section.get(i, []):
-            got, _ = slice_subsection(bodies[i], c["cit"])
-            c["expect"] = ("miss" if got is None
-                           else "ok" if c["want"][:60] in _norm(got)
-                           else "wrong")
+        mine = per_section.get(i, [])
+        for c in mine:
+            c["expect"] = _outcome(bodies[i], c, mine)
 
     remap = {old: new for new, old in enumerate(sorted(keep))}
     out_bodies = [bodies[old] for old in sorted(keep)]
