@@ -281,16 +281,6 @@ _REF_HEAD = (
     r"|clause|clauses|subclause|subclauses|section|sections|subdivision|subdivisions"
     r"|title|subtitle|chapter|part|item|items)\b"
 )
-# Connector between chained refs. Handles ", (b)", " and (c)", ", or (d)"
-# and the Oxford form ", and (e)" — the last of which the previous
-# pattern missed, leaving the tail of every three-or-more-item list
-# ("clauses (i), (iii), and (iv)") unshielded and free to be read as a
-# structural break.
-_REF_CHAIN = (
-    r"(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)"
-    + _REF_LABEL + r"(?:\s*" + _REF_LABEL + r")*)*"
-)
-
 # After a section NUMBER, a comma-joined chain must keep the same label
 # class as the attached paren it continues. That is what separates
 #
@@ -306,14 +296,38 @@ _LOW_LABEL = r"(?-i:\(\s*[a-z]{1,4}\s*\))"
 _DIG_LABEL = r"\(\s*[0-9]{1,3}\s*\)"
 _UPP_LABEL = r"(?-i:\(\s*[A-Z]{1,4}\s*\))"
 
-# Section identifiers are sometimes rendered with a space before the
-# letter suffix — corpus carries "section 1715 l (d)(3)(ii)(I)" for
-# §1715l(d)(3)(ii)(I). Without the optional space the shield stopped at
-# "section 1715" and the citation's own subsection parens were left to be
-# read as structural markers, truncating whatever paragraph contained it.
-_SECTION_ID = r"\s+\d+(?:\s?[A-Za-z])?"
+# Section identifiers carry more than one optional letter. Title 42 runs
+# to "1397jj" and "1396u-1"; corpus also renders some suffixes detached,
+# as "section 1715 l (d)(3)(ii)(I)" for §1715l(d)(3)(ii)(I). Every form
+# the shield cannot spell leaves the citation's own subdivision parens
+# exposed to be read as structural markers — "1397jj(c)(2)" matched only
+# as far as "1397j", so "(c)(2) of this title" became a false marker and
+# answered requests for subsection (c).
+#
+# The detached form takes a single letter only: allowing several would
+# let "section 152 determined..." swallow the following word.
+_SECTION_ID_BODY = (
+    r"\d+(?:[a-zA-Z]{1,3}|\s[a-zA-Z])?"
+    r"(?:[-\u2010-\u2015]\d+[a-zA-Z]{0,3})?"
+)
+_SECTION_ID = r"\s+" + _SECTION_ID_BODY
+
+# Citations also appear in bare U.S.C. form, with no "section" in front:
+# "( 42 U.S.C. 300gg(b)(1)(A) )". Unshielded, that reference's own
+# "(b)" reads as a subsection marker and truncates whichever subsection
+# happens to contain the citation — it cost every paragraph after it in
+# 42 USC 1397jj(c).
+_USC_REF = (
+    r"\b\d{1,2}\s*U\.?\s*S\.?\s*C\.?\s*(?:§+\s*)?"
+    + _SECTION_ID_BODY + r"(?:\s*" + _REF_LABEL + r")*"
+)
 
 
+# Connector between chained refs: ", (b)", " and (c)", ", or (d)", and
+# the Oxford form ", and (e)" — the last of which an earlier pattern
+# missed, leaving the tail of every three-or-more-item list
+# ("clauses (i), (iii), and (iv)") unshielded and free to be read as a
+# structural break.
 _CONNECTOR = r"(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)"
 
 
@@ -340,11 +354,35 @@ _NUMBER_BRANCH = "|".join(
 
 _PAREN_HEADED = r"\s*" + _REF_LABEL + r"(?:\s*" + _REF_LABEL + r")*"
 
+# A paren-headed list keeps one class in its LEADING label throughout:
+# "subsections (b)(1), (b)(2), and (d)(1)(B)" is letter-led all the way,
+# "clauses (i), (iii), and (iv)" likewise. When the class switches the
+# list has ended and a structural marker has begun —
+#
+#     "...the applicable requirements of subsection (a), (5) regulations
+#      or other guidance to ensure that the wages taken into account..."
+#
+# — where "(5)" is paragraph (5) of the subsection being read, not a
+# second reference. Note this keys off the FIRST label of each element,
+# unlike the section-number branch which keys off the last attached one:
+# there the elements are bare labels continuing a path, here they are
+# whole paths in their own right.
+_PAREN_HEADED_CLASSED = "|".join(
+    [
+        r"\s*" + lbl + r"(?:\s*" + _REF_LABEL + r")*"
+        + r"(?:" + _CONNECTOR + lbl + r"(?:\s*" + _REF_LABEL + r")*)*"
+        for lbl in (_LOW_LABEL, _DIG_LABEL, _UPP_LABEL)
+    ]
+    + [_PAREN_HEADED]
+)
+
 _PROTECTED_REF_RE = re.compile(
-    _REF_HEAD +
+    r"(?:" + _USC_REF +                         # bare "42 U.S.C. 300gg(b)"
+    r"|" + _REF_HEAD +
     r"(?:" + _NUMBER_BRANCH +                   # section number forms
     r"|" + _SECTION_ID +                        # bare number, no chaining
-    r"|" + _PAREN_HEADED + _REF_CHAIN +         # paren-headed, may list
+    r"|" + _PAREN_HEADED_CLASSED +              # paren-headed, same-class list
+    r")"
     r")",
     re.IGNORECASE,
 )
@@ -481,8 +519,11 @@ def _is_cross_reference(text: str, pos: int) -> bool:
     if pos == 0:
         return False
     i = pos - 1
-    # Skip whitespace.
+    # Skip whitespace, remembering whether there was any: it is the only
+    # thing separating a chained reference from genuine nesting.
+    saw_space = False
     while i >= 0 and text[i].isspace():
+        saw_space = True
         i -= 1
     if i < 0:
         return False
@@ -490,8 +531,13 @@ def _is_cross_reference(text: str, pos: int) -> bool:
     # Sentence/clause terminator → structural.
     if prev in ".—–:;\n":
         return False
-    # Closing paren → chain continuation of an earlier ref → cross-ref.
-    if prev == ")":
+    # A closing paren immediately before means a chain continuation of an
+    # earlier ref — "(b)(1)". With a space between, it is a subsection
+    # opening its first paragraph: statutes that give no heading render
+    # exactly "(d) (1) If the veteran is in need of...". Treating those
+    # as cross-references discarded the paragraph and everything the
+    # chain search needed after it.
+    if prev == ")" and not saw_space:
         return True
     # Look at the last word/number in the preceding 40 chars.
     snippet = text[max(0, i - 40):i + 1]
@@ -501,9 +547,13 @@ def _is_cross_reference(text: str, pos: int) -> bool:
     word = last_token.group(1)
     if word.lower() in _REF_WORDS:
         return True
-    # Section identifier like "7702B" or "152" — numbers (optionally
-    # followed by a letter) before a parenthetical are cross-refs.
-    if re.fullmatch(r"\d+[A-Za-z]?", word):
+    # Section identifier like "7702B" or "152" — a number before a
+    # parenthetical is a cross-ref, but only when it is ADJACENT to it.
+    # Statutory text is full of numbers that merely precede a marker:
+    # "93 Stat. 1133 (e) Administrative expenses", "after March 1983
+    # (1) For any particular month", a footnote's "1" before "(1)".
+    # Without the adjacency test each of those hid a real subsection.
+    if re.fullmatch(r"\d+[A-Za-z]?", word) and not saw_space:
         return True
     return False
 
@@ -554,6 +604,15 @@ def _pretty_print_legal(text: str) -> str:
     return result
 
 
+# Section identifiers are not just "213". Title 42 in particular is full
+# of "1397aa", "1396u-1" and "300j-12", and corpus renders the separator
+# as an EN DASH ("1396u\u20131"). The old pattern here allowed a single
+# optional letter and no suffix at all, so every one of those citations
+# failed to parse and slice_subsection returned None before it looked at
+# any text — 223 of the fixture's 237 misses came from this alone.
+_USC_SECTION_ID = r"\d+[a-zA-Z]{0,3}(?:[-\u2010-\u2015]\d+[a-zA-Z]{0,3})?"
+
+
 def slice_subsection(section_body: str, citation: str) -> tuple[str | None, tuple[int, int] | None]:
     """Slice a subsection out of a parent section's body.
 
@@ -572,7 +631,8 @@ def slice_subsection(section_body: str, citation: str) -> tuple[str | None, tupl
         return None, None
 
     # Extract the subsection path from the citation: '26 USC 213(d)(2)' → ['d','2']
-    m = re.search(r"USC\s+\d+[A-Z]?((?:\([^)]+\))+)", citation, re.IGNORECASE)
+    m = re.search(rf"USC\s+{_USC_SECTION_ID}((?:\([^)]+\))+)",
+                  citation, re.IGNORECASE)
     if not m:
         return None, None
     levels = re.findall(r"\(([^)]+)\)", m.group(1))
@@ -666,12 +726,13 @@ def _descend_marker_chain(structural, levels, body_len):
                 depths, start, _, _ = structural[j]
                 if start >= limit:
                     break
-                # Loosely, a later marker closes the span only when every
-                # reading of it is a sibling or shallower: an ambiguous
-                # "(i)" inside a paragraph is far more likely a clause
-                # within it than the start of a new subsection.
-                closing = depths[0] if strict else max(depths)
-                if closing <= depth:
+                # A later marker closes the span only when EVERY reading
+                # of it is a sibling or shallower — in both passes. An
+                # ambiguous "(i)" sitting inside a paragraph is far more
+                # likely a clause within it than a new subsection, and
+                # closing on its shallow reading truncated the paragraph
+                # right where its first clause began.
+                if max(depths) <= depth:
                     return start
             return limit
 

@@ -41,22 +41,29 @@ from axiom_bills._common.amendments import slice_subsection
 FIXTURE = pathlib.Path(__file__).parent / "fixtures" / "slicer_cases.json.gz"
 
 # The fixture is deliberately failure-enriched: refresh_slicer_cases.py
-# keeps every sampled section that has at least one failing case, so the
-# hard sections are over-represented on purpose. Do NOT read these rates
-# as production accuracy — the uncurated population scores higher. What
-# matters here is the direction of travel, not the absolute level.
+# kept every sampled section that had at least one failing case when it
+# was generated, so the sections that were hard are over-represented on
+# purpose. That made the rates pessimistic; now that nearly all of them
+# resolve, the sample is close to the population.
 #
 # Measured at the time of writing (1816 cases):
-#   overall     86.62% correct, 0.33% wrong, 13.05% miss
-#   subsection  88.85% correct
-#   paragraph   85.68% correct
+#   overall     99.78% correct, 0.11% wrong, 0.11% miss
+#   subsection  99.81% correct
+#   paragraph   99.77% correct
+#
+# The four residual failures are believed irreducible by lexical rules:
+# three are comma-joined chains whose label classes match, so nothing in
+# the text distinguishes "another reference" from "the next structural
+# marker" ("...under paragraph (1), and (3) in any other case"); the
+# fourth is a section that genuinely carries two subsections designated
+# (e), as an editorial note in the statute itself points out.
 #
 # Floors sit just under those. Update them when a change legitimately
 # moves the numbers — and say which change, in the commit message.
-MIN_CORRECT_OVERALL = 0.85
-MAX_WRONG_OVERALL = 0.006
-MIN_CORRECT_SUBSECTION = 0.87
-MIN_CORRECT_PARAGRAPH = 0.84
+MIN_CORRECT_OVERALL = 0.99
+MAX_WRONG_OVERALL = 0.002
+MIN_CORRECT_SUBSECTION = 0.99
+MIN_CORRECT_PARAGRAPH = 0.99
 
 # Sections a specific bug turned on. The fixture must never lose them,
 # whatever a future refresh samples.

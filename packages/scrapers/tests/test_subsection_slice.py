@@ -275,3 +275,107 @@ def test_a_stray_marker_no_longer_discards_the_rest_of_the_section():
         got, _ = slice_subsection(body, f"7 USC 999(a)({n_})")
         assert got is not None, n_
         assert want in got, (n_, got[:60])
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Citation parsing
+# ────────────────────────────────────────────────────────────────────
+
+def test_section_ids_with_letter_and_hyphen_suffixes_parse():
+    """Title 42 runs to "1397aa" and "1396u-1", and corpus renders that
+    separator as an en dash. A single optional letter and no suffix meant
+    slice_subsection bailed before reading any text — the largest single
+    source of misses by a wide margin."""
+    body = (
+        "(a) Purpose The program is established.\n\n"
+        "(b) Scope This subchapter applies generally.\n\n"
+        "(c) Rules The Secretary shall prescribe."
+    )
+    for cit in ["42 USC 1397aa(b)", "42 USC 1396u–1(b)",
+                "42 USC 1396u-1(b)", "42 USC 300j-12(b)", "42 USC 213(b)"]:
+        got, _ = slice_subsection(body, cit)
+        assert got is not None, cit
+        assert "This subchapter applies" in got, cit
+
+
+def test_multi_letter_section_id_keeps_its_subdivisions_shielded():
+    """"1397jj(c)(2)" matched only as far as "1397j", so "(c)(2) of this
+    title" was left to be read as a structural marker."""
+    assert _shielded("described in section 1397jj(c)(2) of this title") \
+        == ["section 1397jj(c)(2)"]
+
+
+def test_bare_usc_citation_is_shielded():
+    """"( 42 U.S.C. 300gg(b)(1)(A) )" has no "section" in front of it, so
+    the head list never matched and its "(b)" truncated the enclosing
+    subsection at the point of citation."""
+    assert _shielded("of the Public Health Service Act ( 42 U.S.C. "
+                     "300gg(b)(1)(A) ). (7) State child health plan") \
+        == ["42 U.S.C. 300gg(b)(1)(A)"]
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Adjacency: what separates a chained reference from real nesting
+# ────────────────────────────────────────────────────────────────────
+
+def test_spaced_paren_after_paren_is_nesting_not_a_chain():
+    """"(b)(1)" chains a reference; "(d) (1)" is a subsection opening its
+    first paragraph, which is how statutes render one with no heading."""
+    body = (
+        "(c) Prior rule The amount shall be computed as provided.\n\n"
+        "(d) (1) If the veteran is in need of regular aid, the rate "
+        "shall be as follows. (2) In all other cases, the rate is nil."
+    )
+    got, _ = slice_subsection(body, "38 USC 1521(d)(1)")
+    assert got is not None
+    assert "in need of regular aid" in got
+
+
+def test_a_number_only_signals_a_reference_when_adjacent():
+    """Statutory text is full of numbers that merely precede a marker —
+    "93 Stat. 1133 (e)", "after March 1983 (1)", a footnote's "1". Only
+    an adjacent number ("3121(b)") is part of a citation."""
+    body = (
+        "(d) Prior text as amended.\n\n"
+        "Pub. L. 96-153, Dec. 21, 1979, 93 Stat. 1133 "
+        "(e) Administrative expenses Amounts made available under this "
+        "section may be used for administration."
+    )
+    got, _ = slice_subsection(body, "42 USC 1484(e)")
+    assert got is not None
+    assert "Administrative expenses" in got
+    # The adjacent form is still read as a citation.
+    assert _shielded("for service described in section 3121(b)(20)") \
+        == ["section 3121(b)(20)"]
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Span boundaries
+# ────────────────────────────────────────────────────────────────────
+
+def test_paren_headed_list_ends_when_the_label_class_switches():
+    """"subsection (a), (5)" is a reference and then paragraph (5); a
+    genuine list keeps one class in its leading label."""
+    assert _shielded("the requirements of subsection (a), (5) regulations") \
+        == ["subsection (a)"]
+    assert _shielded("specified in subsections (a) and (b), and (2) ending") \
+        == ["subsections (a) and (b)"]
+    # Same-class lists are untouched.
+    assert _shielded("subsections (b)(1), (b)(2), and (d)(1)(B) thereof") \
+        == ["subsections (b)(1), (b)(2), and (d)(1)(B)"]
+
+
+def test_an_ambiguous_marker_does_not_close_a_deeper_span():
+    """A paragraph containing a clause "(i)" must not end at it. Closing
+    on the shallow reading of an ambiguous marker truncated the paragraph
+    exactly where its first clause began."""
+    body = (
+        "(a) Adjustments (1) Depreciation (A) In general "
+        "(i) Property other than certain personal property shall be "
+        "depreciated as provided. (ii) Other property is excluded.\n\n"
+        "(2) Mining costs The amount allowable shall be capitalized."
+    )
+    got, _ = slice_subsection(body, "26 USC 56(a)(1)")
+    assert got is not None
+    assert "Property other than certain personal property" in got, got[:70]
+    assert "Mining costs" not in got
