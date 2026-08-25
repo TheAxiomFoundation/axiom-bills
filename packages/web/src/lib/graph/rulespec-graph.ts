@@ -138,18 +138,23 @@ export function buildAdjacency(
 }
 
 export function lineageSet(start: string, adjacency: Adjacency): Set<string> {
-  const seen = new Set<string>([start]);
+  // Fresh visited set per direction: in a cyclic graph a node reached as
+  // an ancestor must not block the descendant walk through it (and vice
+  // versa). Each pass owns its own frontier; the results union.
+  const lineage = new Set<string>([start]);
   for (const adj of [adjacency.incoming, adjacency.outgoing]) {
+    const seen = new Set<string>([start]);
     const queue = [start];
     while (queue.length > 0) {
       const current = queue.shift()!;
       for (const next of adj.get(current) ?? []) {
         if (!seen.has(next)) {
           seen.add(next);
+          lineage.add(next);
           queue.push(next);
         }
       }
     }
   }
-  return seen;
+  return lineage;
 }

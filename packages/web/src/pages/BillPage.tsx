@@ -6,6 +6,7 @@ import {
   type BillDiffs as TBillDiffs,
   type BillReconciliationRow,
 } from "../lib/api";
+import { OPEN_RECONCILIATION_EVENT } from "../lib/reconcile/schema";
 import { BillDiffs } from "../components/BillDiffs";
 import { BillReconciliation } from "../components/BillReconciliation";
 import { StatusBadge } from "../components/StatusBadge";
@@ -232,17 +233,25 @@ function BillImpactSection({
 // verdict markers; the section only renders when verdicts exist. The
 // graph's "View in reconciliation" deep link targets
 // #bill-reconciliation — when the hash points here, the section opens
-// itself so the anchor scroll lands on visible content.
+// itself so the anchor scroll lands on visible content. hashchange
+// alone misses clicks when the hash is ALREADY #bill-reconciliation
+// (same-fragment navigation fires no event), so the anchor also
+// dispatches OPEN_RECONCILIATION_EVENT on every click.
 function BillReconciliationSection({ rows }: { rows: BillReconciliationRow[] }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
+    const openSection = () => setOpen(true);
     const openOnHash = () => {
       if (window.location.hash === "#bill-reconciliation") setOpen(true);
     };
     openOnHash();
     window.addEventListener("hashchange", openOnHash);
-    return () => window.removeEventListener("hashchange", openOnHash);
+    window.addEventListener(OPEN_RECONCILIATION_EVENT, openSection);
+    return () => {
+      window.removeEventListener("hashchange", openOnHash);
+      window.removeEventListener(OPEN_RECONCILIATION_EVENT, openSection);
+    };
   }, []);
 
   return (

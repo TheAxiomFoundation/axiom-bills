@@ -4,7 +4,8 @@
  * the contested (+1) bonus, summary counts, and queue filters.
  */
 import { describe, it, expect } from "vitest";
-import type { LayerDiff, TopicDiff } from "./schema";
+import { sanitizeLayerDiff } from "./schema";
+import type { DiffStatus, LayerDiff, Materiality, TopicDiff } from "./schema";
 import {
   actionReasonLabel,
   applyFilter,
@@ -77,6 +78,17 @@ describe("layerScore", () => {
     );
     expect(materialityRank.procedural).toBeGreaterThan(materialityRank.cosmetic);
     expect(materialityRank.cosmetic).toBe(materialityRank.none);
+  });
+
+  it("stays finite on out-of-vocabulary tokens (defense in depth)", () => {
+    // api.billReconciliations validates at the fetch boundary, but a
+    // rogue token must still never turn the score into NaN.
+    const d = layer({
+      status: "garbled" as DiffStatus,
+      materiality: "weird" as Materiality,
+    });
+    expect(Number.isFinite(layerScore(d))).toBe(true);
+    expect(layerScore(d)).toBe(0);
   });
 });
 
@@ -225,6 +237,58 @@ describe("applyFilter", () => {
 
   it("'aligned' keeps only rows with no action at all", () => {
     expect(applyFilter(rows, "aligned").map((r) => r.section)).toEqual(["C"]);
+  });
+});
+
+describe("sanitizeLayerDiff", () => {
+  it("passes a fully valid layer through, keeping optional fields", () => {
+    const valid = layer({
+      status: "narrows",
+      materiality: "changes-eligibility",
+      action: "encode-in-model",
+      confidence: "medium",
+      ambiguity: "could read either way",
+      upstreamQuote: "the Secretary shall",
+    });
+    expect(sanitizeLayerDiff(valid)).toEqual(valid);
+  });
+
+  it("drops non-objects and layers with an out-of-vocabulary status", () => {
+    expect(sanitizeLayerDiff(null)).toBeNull();
+    expect(sanitizeLayerDiff(undefined)).toBeNull();
+    expect(sanitizeLayerDiff("aligned")).toBeNull();
+    expect(sanitizeLayerDiff({ ...layer(), status: "garbled" })).toBeNull();
+    expect(sanitizeLayerDiff({ ...layer(), status: undefined })).toBeNull();
+  });
+
+  it("coerces unknown soft enums to their safest members", () => {
+    const out = sanitizeLayerDiff({
+      status: "narrows",
+      divergence: "threshold moved",
+      materiality: "very-material",
+      action: "escalate!!",
+      confidence: "certain",
+      rationale: 42,
+    });
+    expect(out).toEqual({
+      status: "narrows",
+      divergence: "threshold moved",
+      materiality: "none", // renders no chip
+      action: "legal-review", // routed to a human, not hidden
+      confidence: "low",
+      rationale: "",
+    });
+    expect(out).not.toHaveProperty("ambiguity");
+  });
+
+  it("drops non-string optional fields instead of leaking them", () => {
+    const out = sanitizeLayerDiff({
+      ...layer(),
+      ambiguity: { note: "object, not string" },
+      upstreamQuote: 7,
+    });
+    expect(out).not.toHaveProperty("ambiguity");
+    expect(out).not.toHaveProperty("upstreamQuote");
   });
 });
 

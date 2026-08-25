@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -231,6 +232,20 @@ def test_scan_respects_jurisdiction_filter(db_path):
     assert _queue_rows(db_path) == []
 
 
+def test_veto_overridden_bill_is_enqueued_as_enacted_touch(db_path):
+    # veto_overridden is a became-law status (models.STATUS_ORDER rank
+    # 70) — its touches must trigger the enacted_touch signal just like
+    # enacted/signed.
+    with sqlite3.connect(db_path) as raw:
+        raw.execute(
+            "UPDATE bills SET current_status='veto_overridden' WHERE id='b3'"
+        )
+    counts = enqueue_scan(db_path)
+    assert counts["enacted_touch"] == 1
+    rows = {(r["bill_id"], r["reason"]): r for r in _queue_rows(db_path)}
+    assert rows[("b3", "enacted_touch")]["citation"] == "26 USC 32(a)"
+
+
 def test_unenacted_touching_bill_is_not_enqueued(db_path):
     # b1's second section touches an encoded file, but b1 isn't
     # enacted/signed — no enacted_touch row for it.
@@ -253,14 +268,17 @@ RUN_ENV = {
 
 class FakePopen:
     """Stands in for subprocess.Popen: canned stdout/stderr streams and
-    exit code, records every invocation on the class."""
+    exit code, records every invocation (and its kwargs) on the class."""
 
     calls: list[list[str]] = []
+    kwargs: list[dict] = []
     returncode_next = 0
     stderr_next = ""
 
-    def __init__(self, cmd, stdout=None, stderr=None, text=None, bufsize=None):
+    def __init__(self, cmd, stdout=None, stderr=None, text=None,
+                 bufsize=None, encoding=None, errors=None):
         type(self).calls.append(list(cmd))
+        type(self).kwargs.append({"encoding": encoding, "errors": errors})
         self.stdout = io.StringIO("encoder progress line\n")
         self.stderr = io.StringIO(type(self).stderr_next)
         self.returncode = type(self).returncode_next
@@ -272,6 +290,7 @@ class FakePopen:
 @pytest.fixture
 def fake_popen(monkeypatch):
     FakePopen.calls = []
+    FakePopen.kwargs = []
     FakePopen.returncode_next = 0
     FakePopen.stderr_next = ""
     monkeypatch.setattr(encode_queue.subprocess, "Popen", FakePopen)
@@ -333,6 +352,33 @@ def test_run_success_marks_ran_and_never_applies(db_path, fake_popen, tmp_path):
         assert row["detail"].startswith("exit 0; output ")
         assert row["id"] in row["detail"]  # per-row output dir
         assert row["resolved_at"] is not None
+
+
+def test_run_decodes_output_with_replacement(db_path, fake_popen, tmp_path):
+    """The runner must pass errors='replace': a stray non-UTF-8 byte in
+    encoder output would otherwise raise UnicodeDecodeError in a pump
+    thread, leaving the child blocked on a full pipe and t.join()
+    hanging forever."""
+    enqueue_scan(db_path)
+    run_pending(db_path, env=_run_env(tmp_path))
+    assert fake_popen.kwargs
+    for kwargs in fake_popen.kwargs:
+        assert kwargs == {"encoding": "utf-8", "errors": "replace"}
+
+
+def test_run_encoder_survives_non_utf8_output():
+    """End-to-end pump check against a real child process emitting
+    invalid UTF-8 on both streams (no axiom-encode needed —
+    _run_encoder just runs the argv it is given)."""
+    exit_code, stderr_tail = encode_queue._run_encoder([
+        sys.executable, "-c",
+        "import sys;"
+        "sys.stdout.buffer.write(b'progress \\xff line\\n');"
+        "sys.stderr.buffer.write(b'boom \\xfe tail\\n');"
+        "sys.exit(3)",
+    ])
+    assert exit_code == 3
+    assert "boom" in stderr_tail and "tail" in stderr_tail
 
 
 def test_run_failure_records_exit_and_stderr_tail(db_path, fake_popen,

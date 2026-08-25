@@ -13,6 +13,7 @@
 // Pure functions only (no React, no fetching) so this is unit-testable.
 
 import type { BillDiffs } from "../api";
+import { normCitation, normalizeSources } from "../yaml-slice";
 import { buildAdjacency, lineageSet } from "./rulespec-graph";
 import type {
   RulespecGraph,
@@ -102,6 +103,12 @@ export function billOverlay(
 
   for (const sec of diffs.sections) {
     if (sec.encoding) {
+      // Same gate as api.buildMatchedForBill and the scrapers' candidate
+      // scans: an encoded section only counts as touched when the bill
+      // carries a parsed amendment op (applied or unapplied) against it.
+      // A bare citation of an encoded section — findings or definitions
+      // clauses — is a cross-reference, not an amendment.
+      if (!sec.applied_ops?.length && !sec.unapplied_ops?.length) continue;
       const candidates = [
         sec.encoding.citation,
         citationFromFilePath(sec.encoding.file_path),
@@ -191,7 +198,12 @@ export function billOverlay(
 // invalidates vs. the rest — and the graph's `via` edge labels then
 // separate upstream consumers of the amended rules from everything else.
 
-const normCite = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+// Shares normCitation with the diff panel's slicer (yaml-slice) so the
+// graph and the panel agree on what counts as the same citation —
+// '20 U.S.C. 1070a', '§ 32', and 'IRC section 63' all collapse to the
+// plain 'TITLE USC SECTION' form. Lowercased on top: rule sources drift
+// on case too.
+const normCite = (s: string) => normCitation(s).toLowerCase();
 
 /** Do two legal citations cover overlapping text? True when equal, or
  *  when one addresses a subdivision of the other — "26 USC 25E" covers
@@ -221,10 +233,13 @@ export function splitRulesByBillImpact(
   const direct: RuleSummary[] = [];
   const other: RuleSummary[] = [];
   for (const rule of rules) {
-    const sources = (rule.source ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    // Same normalization pipeline as the diff panel's slicer
+    // (yaml-slice.sourceOverlaps): collapse U.S.C./§/IRC drift, then
+    // expand the shared-prefix shorthand where only the first source
+    // carries the full citation ("26 USC 32(c)(1)(E), 32(m), (j)").
+    const sources = rule.source
+      ? normalizeSources(normCitation(rule.source))
+      : [];
     const hit = sources.some((src) =>
       amendedCitations.some((cite) => citationsIntersect(src, cite)),
     );

@@ -6,7 +6,7 @@
  * derived from rulespec file paths.
  */
 import { describe, it, expect } from "vitest";
-import type { BillDiffs, BillDiffSection } from "../api";
+import type { AmendmentOp, BillDiffs, BillDiffSection } from "../api";
 import type { RulespecGraph, SectionNode } from "./rulespec-graph";
 import { billOverlay, citationFromFilePath, focusOnBill } from "./overlay";
 import { buildAdjacency, layoutPositions, lineageSet } from "./rulespec-graph";
@@ -50,6 +50,16 @@ const GRAPH: RulespecGraph = {
   ],
 };
 
+// A parsed amendment op: sections carrying an encoding only count as
+// touched when the bill actually amends them (same gate as
+// api.buildMatchedForBill), so amended fixtures carry one of these.
+const OP: AmendmentOp = {
+  kind: "strike-insert",
+  needle: "September 30, 2025",
+  payload: "December 31, 2031",
+  raw: 'by striking "September 30, 2025" and inserting "December 31, 2031"',
+};
+
 function diffSection(over: Partial<BillDiffSection> & { citation: string }): BillDiffSection {
   return {
     in_corpus: true,
@@ -60,7 +70,7 @@ function diffSection(over: Partial<BillDiffSection> & { citation: string }): Bil
     current_text: null,
     applied_text: null,
     diff: [],
-    applied_ops: [],
+    applied_ops: [OP],
     unapplied_ops: [],
     has_rulespec: false,
     encoding: null,
@@ -272,6 +282,43 @@ describe("billOverlay", () => {
     expect(out.edges).toEqual(GRAPH.edges);
   });
 
+  it("ignores an encoded section the bill only cites (no parsed ops)", () => {
+    // A findings/definitions clause citing §32 matches the encoding by
+    // citation but carries no amendment op — it must not light the node
+    // up, matching api.buildMatchedForBill and the scrapers' scans.
+    const diffs: BillDiffs = {
+      sections: [
+        diffSection({
+          citation: "26 USC 32",
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+          applied_ops: [],
+          unapplied_ops: [],
+        }),
+      ],
+    };
+    const out = billOverlay(GRAPH, diffs, BILL);
+    expect(out.billNodeId).toBeNull();
+    expect(out.sections.every((s) => s.layer === "baseline")).toBe(true);
+    expect(out.diffCitationById).toEqual({});
+  });
+
+  it("counts an unapplied op as a real amendment", () => {
+    // The applier couldn't verify the instruction against corpus text,
+    // but it's still amendment language — the touch must not vanish.
+    const diffs: BillDiffs = {
+      sections: [
+        diffSection({
+          citation: "26 USC 32(b)",
+          encoding: encoding("26 USC 32", "statutes/26/32.yaml"),
+          applied_ops: [],
+          unapplied_ops: [OP],
+        }),
+      ],
+    };
+    const out = billOverlay(GRAPH, diffs, BILL);
+    expect(out.sections.find((s) => s.id === "26 USC 32")?.layer).toBe("bill");
+  });
+
   it("does not mutate the input graph", () => {
     const diffs: BillDiffs = {
       sections: [
@@ -299,6 +346,19 @@ describe("lineage helpers", () => {
     const adj = buildAdjacency(edges);
     expect(lineageSet("b", adj)).toEqual(new Set(["a", "b", "c", "d"]));
     expect(lineageSet("x", adj)).toEqual(new Set(["x", "c"]));
+  });
+
+  it("traverses descendants through a node already seen as an ancestor (cycle)", () => {
+    // a⇄b cycle plus b→d. From a, b is both ancestor and descendant;
+    // a shared visited set across the two BFS passes let the incoming
+    // pass swallow b and drop the true descendant d.
+    const edges = [
+      { from: "a", to: "b" },
+      { from: "b", to: "a" },
+      { from: "b", to: "d" },
+    ];
+    const adj = buildAdjacency(edges);
+    expect(lineageSet("a", adj)).toEqual(new Set(["a", "b", "d"]));
   });
 
   it("layoutPositions places every node and ignores dangling edges", () => {
@@ -385,6 +445,13 @@ describe("citationsIntersect", () => {
     expect(citationsIntersect("7 CFR 273.3", "7 CFR 273.30")).toBe(false);
     expect(citationsIntersect("", "26 USC 25E")).toBe(false);
   });
+
+  it("collapses U.S.C./§/IRC format drift like the diff panel's normCitation", () => {
+    expect(citationsIntersect("26 U.S.C. § 25E(g)", "26 USC 25E")).toBe(true);
+    expect(citationsIntersect("20 U.S.C. 1070a(b)(5)", "20 USC 1070a")).toBe(true);
+    expect(citationsIntersect("IRC section 63(c)(2)", "26 USC 63(c)")).toBe(true);
+    expect(citationsIntersect("7 C.F.R. 273.3(a)", "7 CFR 273.3")).toBe(true);
+  });
 });
 
 describe("splitRulesByBillImpact", () => {
@@ -432,6 +499,27 @@ describe("splitRulesByBillImpact", () => {
     const { direct, other } = splitRulesByBillImpact(RULES, []);
     expect(direct).toEqual([]);
     expect(other).toHaveLength(4);
+  });
+
+  it("expands shared-prefix shorthand sources before matching", () => {
+    // The rulespec convention normalizeSources exists for: only the
+    // first source carries the full citation, later entries drop it.
+    const rules = [rule("phaseout", "26 USC 32(c)(1)(E), 32(m), (j)")];
+    expect(
+      splitRulesByBillImpact(rules, ["26 USC 32(m)"]).direct,
+    ).toHaveLength(1);
+    expect(
+      splitRulesByBillImpact(rules, ["26 USC 32(j)"]).direct,
+    ).toHaveLength(1);
+    expect(
+      splitRulesByBillImpact(rules, ["26 USC 32(a)"]).direct,
+    ).toHaveLength(0);
+  });
+
+  it("matches dotted U.S.C. sources against plain USC amended citations", () => {
+    const rules = [rule("add_on", "20 U.S.C. 1070a(b)(5)")];
+    const { direct } = splitRulesByBillImpact(rules, ["20 USC 1070a(b)"]);
+    expect(direct.map((r) => r.name)).toEqual(["add_on"]);
   });
 });
 

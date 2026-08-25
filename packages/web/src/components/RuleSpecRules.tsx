@@ -60,6 +60,22 @@ export default function RuleSpecRules({
     return <pre className="rs-variant-yaml">{yamlText}</pre>;
   }
 
+  // YAML parsed but no rule grounds in this citation. The gate upstream
+  // (BillDiffs' line-based baseline slicer) and the YAML matcher here
+  // can disagree — different parser, and this may be the PATCHED file —
+  // so never render an empty card list: explain, then show the file.
+  if (parsed.cards.length === 0) {
+    return (
+      <div className="rs-rule-cards rs-rule-cards--fallback">
+        <p className="hint">
+          No rule in this file grounds in <code>{sectionCitation}</code> —
+          showing the whole file instead.
+        </p>
+        <pre className="rs-variant-yaml">{yamlText}</pre>
+      </div>
+    );
+  }
+
   return (
     <div className="rs-rule-cards">
       {parsed.cards.map((card) => (

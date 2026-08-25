@@ -154,6 +154,17 @@ describe("buildRuleCards", () => {
     expect(dump).not.toContain("Long prose that must never surface");
   });
 
+  it("returns zero cards WITHOUT error when no rule grounds in the citation", () => {
+    // Not a parse failure — the caller (RuleSpecRules) must render its
+    // own "no rule grounds here" fallback with the raw file, never an
+    // empty card list.
+    const out = buildRuleCards(FIXTURE, "26 USC 999", []);
+    expect(out.error).toBe(false);
+    expect(out.cards).toEqual([]);
+    expect(out.otherCount).toBe(2);
+    expect(out.total).toBe(2);
+  });
+
   it("flags unparseable YAML so the caller can fall back to raw text", () => {
     expect(buildRuleCards(": not yaml : [", "26 USC 1", []).error).toBe(true);
     expect(buildRuleCards("format: rulespec/v1\n", "26 USC 1", []).error).toBe(true);

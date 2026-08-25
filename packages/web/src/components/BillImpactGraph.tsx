@@ -30,7 +30,10 @@ import {
   type BillReconciliationRow,
 } from "../lib/api";
 import { retry } from "../lib/retry";
-import type { TopicDiff } from "../lib/reconcile/schema";
+import {
+  OPEN_RECONCILIATION_EVENT,
+  type TopicDiff,
+} from "../lib/reconcile/schema";
 import {
   diffLabel,
   materialityLabel,
@@ -216,10 +219,15 @@ function GraphView({
     return m;
   }, [reconciliations]);
 
+  const graphSectionsById = useMemo(
+    () => new Map(graph.sections.map((s) => [s.id, s])),
+    [graph],
+  );
+
   const verdictForNode = useMemo(() => {
     return (id: string): TopicDiff | null => {
       if (verdictByCitation.size === 0) return null;
-      const section = graph.sections.find((s) => s.id === id);
+      const section = graphSectionsById.get(id);
       const candidates = [
         id,
         section?.legalId,
@@ -231,7 +239,7 @@ function GraphView({
       }
       return null;
     };
-  }, [verdictByCitation, graph, overlay]);
+  }, [verdictByCitation, graphSectionsById, overlay]);
 
   // Baseline mode = the stored graph as-is; overlay mode adds the bill
   // node, relabelled touched sections, and backlog placeholders.
@@ -253,7 +261,12 @@ function GraphView({
     [graph],
   );
 
-  const { nodes, edges } = useMemo(() => {
+  // Layout + base node/edge arrays depend only on the active graph —
+  // never on the selection. Re-running dagre layout on every node click
+  // made selecting a card visibly laggy at monorepo scale; selection is
+  // applied below in a light map pass, the same pattern as the hover
+  // lineage's displayNodes.
+  const { nodes: baseNodes, edges } = useMemo(() => {
     const activeIds = new Set(activeSections.map((s) => s.id));
 
     const flowEdges: Edge[] = activeEdges
@@ -312,7 +325,7 @@ function GraphView({
             verdict &&
               (verdict.billVsLaw.ambiguity || verdict.modelVsLaw.ambiguity),
           ),
-          isSelected: selectedId === section.id,
+          isSelected: false,
         } satisfies SectionFlowData,
       };
     });
@@ -321,13 +334,23 @@ function GraphView({
   }, [
     activeSections,
     activeEdges,
-    selectedId,
     sectionsById,
     groupLabel,
     bill,
     mode,
     verdictForNode,
   ]);
+
+  // Selection pass: only the selected node gets a fresh data object, so
+  // clicking never re-runs layout and unselected nodes keep identity.
+  const nodes = useMemo(() => {
+    if (!selectedId) return baseNodes;
+    return baseNodes.map((n) =>
+      n.id === selectedId
+        ? { ...n, data: { ...n.data, isSelected: true } }
+        : n,
+    );
+  }, [baseNodes, selectedId]);
 
   // Hover lineage: BFS both directions from the hovered node, dim the
   // rest — keeps dense graphs readable.
@@ -675,7 +698,16 @@ function SectionDetail({
           {verdict.billVsLaw.ambiguity || verdict.modelVsLaw.ambiguity ? (
             <em className="contestableTag">contestable</em>
           ) : null}
-          <a href="#bill-reconciliation">View in reconciliation ↓</a>
+          <a
+            href="#bill-reconciliation"
+            // The section listens for this and opens itself; the hash
+            // alone is a no-op when it's already #bill-reconciliation.
+            onClick={() =>
+              window.dispatchEvent(new Event(OPEN_RECONCILIATION_EVENT))
+            }
+          >
+            View in reconciliation ↓
+          </a>
         </p>
       ) : null}
 

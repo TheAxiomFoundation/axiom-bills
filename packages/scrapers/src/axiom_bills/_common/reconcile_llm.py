@@ -37,6 +37,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from .citation_scope import normalize_citation
+from .corpus_client import _parent_paths, citation_to_path
 from .db import DEFAULT_DB
 from .reencoder_llm import DEFAULT_MODEL
 
@@ -238,7 +240,10 @@ def _truncate(s: str, n: int = 6000) -> str:
 
 
 def _resolve_provision(conn: sqlite3.Connection, citation: str) -> str:
-    c = (citation or "").strip()
+    # Stored citations are normalized at ingestion; the LLM's aren't
+    # ('26 U.S.C. 32', 'IRC section 32') — un-normalized comparisons
+    # silently miss and misreport the provision as unavailable.
+    c = normalize_citation((citation or "").strip())
     if not c:
         return "No citation given."
     row = conn.execute(
@@ -257,6 +262,21 @@ def _resolve_provision(conn: sqlite3.Connection, citation: str) -> str:
              ORDER BY length(citation) DESC LIMIT 1
             """, (c, c),
         ).fetchone()
+    if row is None:
+        # corpus_client-style parent fallback on citation_path: the
+        # corpus often stores body text at section granularity, and the
+        # path form sidesteps any residual citation-string drift.
+        path = citation_to_path(c)
+        for try_path in ([path, *_parent_paths(path)] if path else []):
+            row = conn.execute(
+                """
+                SELECT citation, citation_path, heading, body
+                  FROM corpus_provisions
+                 WHERE citation_path = ?
+                """, (try_path,),
+            ).fetchone()
+            if row is not None:
+                break
     if row is None:
         return (f'No provision matching "{c}" is in the local corpus cache. '
                 "Treat as a limitation; do not guess its content.")
@@ -318,7 +338,11 @@ def _encoding_payload(conn: sqlite3.Connection, enc: sqlite3.Row,
 
 def _resolve_rules(conn: sqlite3.Connection, bill_id: str | None,
                    citation: str) -> str:
-    c = (citation or "").strip()
+    # axiom_encodings.citation is normalized at ingestion; normalize the
+    # LLM's form too or 'IRC section 32(a)' finds nothing and the
+    # analyst wrongly reports "not encoded". File paths pass through
+    # normalize_citation unchanged.
+    c = normalize_citation((citation or "").strip())
     if not c:
         return "No citation given."
     enc_rows = conn.execute(
@@ -396,7 +420,8 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                  attempts: int = 2) -> dict | None:
     """Agent loop: may call research tools, then must call
     record_verdict. Retries once (a fresh attempt) on schema mismatch;
-    returns None on persistent failure so the caller records nothing."""
+    returns None on persistent failure so the caller records a
+    failure sentinel instead of verdicts."""
     tools = [LOOKUP_PROVISION_TOOL, LOOKUP_RULES_TOOL, RECORD_VERDICT_TOOL]
     for _attempt in range(attempts):
         messages: list[dict] = [{"role": "user", "content": user}]
@@ -733,8 +758,22 @@ def reconcile_for_bill(conn: sqlite3.Connection, bill_id: str, *,
             if bill_verdict is None or model_verdict is None:
                 which = "billVsLaw" if bill_verdict is None else "modelVsLaw"
                 print(f"     FAILED: no valid {which} verdict after retries "
-                      f"for {bill_number} @ {citation} — recording nothing.",
+                      f"for {bill_number} @ {citation} — recording a "
+                      "failure sentinel.",
                       file=sys.stderr, flush=True)
+                # Upsert a sentinel keyed by the NEW fingerprint: the
+                # replace evicts any stale row (old verdicts must not
+                # keep rendering as current) and the fingerprint skip
+                # fires next run instead of re-burning attempts ×
+                # max_turns calls. No billVsLaw/modelVsLaw layers —
+                # the web filters out rows lacking both, so the
+                # sentinel is invisible to the UI.
+                _upsert_reconciliation(conn, bill_id, citation, {
+                    "topic": section.get("heading") or citation,
+                    "section": citation,
+                    "failed": True,
+                    "error": f"no valid {which} verdict after retries",
+                }, fingerprint, used_model)
                 counts["failed"] += 1
             else:
                 payload = {
@@ -771,7 +810,10 @@ def reconcile_all(db_path: str = DEFAULT_DB, *,
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
 
-    where = ["diffs IS NOT NULL"]
+    # touches_rulespec is precomputed with exactly the
+    # candidate_sections predicate — filtering on it skips the JSON
+    # parse of every non-touching bill's diffs blob.
+    where = ["diffs IS NOT NULL", "touches_rulespec = 1"]
     params: list = []
     if jurisdiction:
         where.append("jurisdiction = ?")

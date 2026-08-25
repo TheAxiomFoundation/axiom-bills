@@ -7,7 +7,20 @@
  * `26 USC 32(c)(1)(E), 32(m)`).
  */
 import { describe, it, expect } from "vitest";
-import { sliceRulesBySource, normalizeSources } from "./yaml-slice";
+import { normCitation, normalizeSources, sliceRulesBySource } from "./yaml-slice";
+
+
+describe("normCitation", () => {
+  // Shared by the slicer's overlap check AND the impact graph's
+  // citationsIntersect (graph/overlay.ts) — the two views must agree.
+  it("collapses dotted/§/IRC forms to plain TITLE USC SECTION", () => {
+    expect(normCitation("20 U.S.C. § 1070a(b)(5)")).toBe("20 USC 1070a(b)(5)");
+    expect(normCitation("7 C.F.R. 273.3(a)")).toBe("7 CFR 273.3(a)");
+    expect(normCitation("IRC section 63(c)(5)")).toBe("26 USC 63(c)(5)");
+    expect(normCitation("IRC § 63")).toBe("26 USC 63");
+    expect(normCitation("  26  USC   32 ")).toBe("26 USC 32");
+  });
+});
 
 
 describe("normalizeSources", () => {

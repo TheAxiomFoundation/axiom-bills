@@ -5,7 +5,9 @@ The LLM is never called — a fake client is injected. Coverage:
 * fingerprint stability and skip logic (unchanged inputs → no calls),
 * section selection (encoding match + ≥1 op) against a fixture DB,
 * payload validation: enum rejection + retry path, and persistent
-  failure recording nothing,
+  failure recording a layer-less failure sentinel,
+* lookup-tool citation normalization (the LLM's '26 U.S.C. 32' /
+  'IRC section 32' forms must still match the normalized store),
 * upsert uniqueness on (bill_id, section_citation).
 """
 
@@ -18,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from axiom_bills._common.reconcile_llm import (
+    _resolve_provision,
+    _resolve_rules,
     candidate_sections,
     reconcile_all,
     reconcile_for_bill,
@@ -37,6 +41,7 @@ SCHEMA_MIGRATIONS = [
     "007_rule_variants.sql",
     "008_rule_variant_provenance.sql",
     "056_variant_source_tracking.sql",
+    "057_bill_touch_flags.sql",
     "060_bill_reconciliations.sql",
 ]
 
@@ -91,8 +96,9 @@ def db_path(tmp_path):
     conn.execute(
         """
         INSERT INTO bills (id, jurisdiction, session_id, chamber, number,
-                           source_url, diffs)
-        VALUES ('b1', 'us', 's1', 'lower', 'HR1', 'https://example.gov/hr1', ?)
+                           source_url, diffs, touches_rulespec)
+        VALUES ('b1', 'us', 's1', 'lower', 'HR1', 'https://example.gov/hr1',
+                ?, 1)
         """,
         (_diffs([_encoded_section()]),),
     )
@@ -287,7 +293,8 @@ def test_candidate_sections_merge_same_citation():
 
 def test_dry_run_selects_only_qualifying_bills(db_path):
     with sqlite3.connect(db_path) as raw:
-        # A bill whose only section has no encoding: never selected.
+        # A bill whose only section has no encoding: never selected
+        # (touches_rulespec stays 0, matching its diffs).
         raw.execute(
             """
             INSERT INTO bills (id, jurisdiction, session_id, chamber, number,
@@ -299,6 +306,18 @@ def test_dry_run_selects_only_qualifying_bills(db_path):
                               applied_ops=[{"kind": "strike-insert",
                                             "target": "7 USC 2015",
                                             "needle": "x", "payload": "y"}])]),),
+        )
+        # touches_rulespec=0 despite encoded-looking diffs: the
+        # precomputed flag is the selection predicate — the diffs blob
+        # of a non-touching bill is never even parsed.
+        raw.execute(
+            """
+            INSERT INTO bills (id, jurisdiction, session_id, chamber, number,
+                               source_url, diffs, touches_rulespec)
+            VALUES ('b3', 'us', 's1', 'lower', 'HR3',
+                    'https://example.gov/hr3', ?, 0)
+            """,
+            (_diffs([_encoded_section()]),),
         )
     counts = reconcile_all(db_path, jurisdiction="us", dry_run=True)
     assert counts["would_analyze"] == 1
@@ -348,7 +367,7 @@ def test_invalid_enum_then_retry_records_row(conn):
     assert row["fingerprint"] == section_fingerprint(_encoded_section())
 
 
-def test_persistent_invalid_records_nothing(conn):
+def test_persistent_invalid_records_failure_sentinel(conn):
     fake = FakeClient(
         [_verdict_resp(dict(VALID_VERDICT, materiality="huge"))],
         repeat_last=True,
@@ -356,10 +375,92 @@ def test_persistent_invalid_records_nothing(conn):
     counts = reconcile_for_bill(conn, "b1", get_client=lambda: fake)
     assert counts["failed"] == 1
     assert counts["analyzed"] == 0
-    n = conn.execute("SELECT count(*) FROM bill_reconciliations").fetchone()[0]
-    assert n == 0
     # 2 attempts × 5 turns for the billVsLaw analyst; modelVsLaw skipped.
     assert len(fake.calls) == 10
+
+    # The failure is recorded as a layer-less sentinel keyed by the
+    # section's fingerprint: invisible to the web (which drops rows
+    # lacking billVsLaw/modelVsLaw) but enough for the skip to fire.
+    row = conn.execute(
+        "SELECT payload, fingerprint FROM bill_reconciliations"
+        " WHERE bill_id='b1'"
+    ).fetchone()
+    payload = json.loads(row["payload"])
+    assert payload["failed"] is True
+    assert "billVsLaw" in payload["error"]
+    assert "billVsLaw" not in payload and "modelVsLaw" not in payload
+    assert row["fingerprint"] == section_fingerprint(_encoded_section())
+
+    # Re-run with unchanged inputs: the sentinel satisfies the
+    # fingerprint skip, so no attempts × max_turns re-burn.
+    def _no_client():
+        raise AssertionError("client requested on an unchanged section")
+    counts = reconcile_for_bill(conn, "b1", get_client=_no_client)
+    assert counts == {"sections": 1, "analyzed": 0, "skipped": 1, "failed": 0}
+
+
+def test_failure_after_input_change_evicts_stale_verdicts(conn):
+    """When the fingerprint changed but both analyst attempts fail, the
+    old row's verdicts must not keep serving as current — the sentinel
+    upsert replaces them under the NEW fingerprint."""
+    fake = FakeClient([_verdict_resp(VALID_VERDICT)] * 2)
+    reconcile_for_bill(conn, "b1", get_client=lambda: fake)
+
+    new_section = _encoded_section(applied_ops=[{
+        "kind": "strike-insert", "target": "26 USC 32(a)",
+        "needle": "$600", "payload": "$900",
+    }], after="The credit is $900.")
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (_diffs([new_section]),))
+
+    # Every response is empty (no tool use): both attempts give up.
+    fake2 = FakeClient([_Resp([])], repeat_last=True)
+    counts = reconcile_for_bill(conn, "b1", get_client=lambda: fake2)
+    assert counts["failed"] == 1
+
+    rows = conn.execute(
+        "SELECT payload, fingerprint FROM bill_reconciliations"
+        " WHERE bill_id='b1'"
+    ).fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["payload"])
+    assert payload["failed"] is True
+    assert "billVsLaw" not in payload  # stale verdicts gone
+    assert rows[0]["fingerprint"] == section_fingerprint(new_section)
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Lookup-tool citation normalization
+# ────────────────────────────────────────────────────────────────────
+
+def test_resolve_provision_normalizes_citation_drift(conn):
+    # The store holds '26 USC 32'; the LLM's format drift must still
+    # find it instead of misreporting the provision as unavailable.
+    for drift in ("26 U.S.C. 32", "IRC section 32", "IRC § 32"):
+        assert "The credit is $600." in _resolve_provision(conn, drift), drift
+
+
+def test_resolve_provision_falls_back_to_parent_citation_path(conn):
+    # A provision whose stored citation string doesn't prefix-match is
+    # still reachable through the corpus_client-style citation_path
+    # parent walk.
+    conn.execute(
+        """
+        INSERT INTO corpus_provisions (citation_path, citation,
+                                       jurisdiction, doc_type, heading, body)
+        VALUES ('us/statute/26/24', 'Section 24 of the IRC', 'us', 'statute',
+                'Child tax credit', 'The CTC text.')
+        """
+    )
+    assert "The CTC text." in _resolve_provision(conn, "26 U.S.C. 24(h)(2)")
+
+
+def test_resolve_rules_normalizes_citation_drift(conn):
+    # axiom_encodings holds '26 USC 32(a)'; the LLM's drifted forms
+    # must not make the analyst wrongly report "not encoded".
+    for drift in ("26 U.S.C. 32(a)", "IRC section 32(a)", "IRC § 32(a)"):
+        out = _resolve_rules(conn, None, drift)
+        assert "example_credit_amount" in out, drift
 
 
 # ────────────────────────────────────────────────────────────────────

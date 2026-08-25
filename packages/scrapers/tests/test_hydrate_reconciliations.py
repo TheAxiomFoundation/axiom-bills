@@ -24,6 +24,7 @@ SCHEMA_MIGRATIONS = [
     "004_encodings_and_citations.sql",
     "007_rule_variants.sql",             # 056 alters it
     "056_variant_source_tracking.sql",   # adds bills.diffs
+    "057_bill_touch_flags.sql",          # adds bills.touches_rulespec
     "060_bill_reconciliations.sql",
 ]
 
@@ -73,8 +74,9 @@ def _make_db(tmp_path, migrations=SCHEMA_MIGRATIONS) -> str:
     conn.execute(
         """
         INSERT INTO bills (id, jurisdiction, session_id, chamber, number,
-                           source_url, diffs)
-        VALUES ('b1', 'us', 's1', 'lower', 'HR1', 'https://example.gov/hr1', ?)
+                           source_url, diffs, touches_rulespec)
+        VALUES ('b1', 'us', 's1', 'lower', 'HR1', 'https://example.gov/hr1',
+                ?, 1)
         """,
         (json.dumps({"sections": [_encoded_section()]}),),
     )
@@ -171,6 +173,52 @@ def test_stale_remote_fingerprint_is_not_hydrated(tmp_path, monkeypatch):
     counts = supabase_sync.hydrate_reconciliations(db_path)
     assert counts == {"candidates": 1, "hydrated": 0, "stale_remote": 1}
     assert _local_rows(db_path) == []
+
+
+def test_hydrates_failure_sentinel_rows(tmp_path, monkeypatch):
+    # reconcile stores a layer-less {"failed": true} sentinel when both
+    # analyst attempts fail; it must round-trip through hydration like
+    # any row so the fingerprint skip fires on fresh CI databases too.
+    db_path = _make_db(tmp_path)
+    fingerprint = section_fingerprint(_encoded_section())
+    sentinel = {
+        "topic": "Earned income credit",
+        "section": "26 USC 32(a)",
+        "failed": True,
+        "error": "no valid billVsLaw verdict after retries",
+    }
+    _patch_remote(monkeypatch, [{
+        "bill_id": "remote-b1",
+        "section_citation": "26 USC 32(a)",
+        "payload": sentinel,
+        "fingerprint": fingerprint,
+        "model": "claude-x",
+        "computed_at": "2026-07-20T01:02:03+00:00",
+    }])
+
+    counts = supabase_sync.hydrate_reconciliations(db_path)
+    assert counts == {"candidates": 1, "hydrated": 1, "stale_remote": 0}
+    rows = _local_rows(db_path)
+    assert len(rows) == 1
+    assert json.loads(rows[0]["payload"]) == sentinel
+
+
+def test_skips_bills_not_touching_rulespec(tmp_path, monkeypatch):
+    # touches_rulespec is precomputed with exactly the
+    # candidate_sections predicate — a non-touching bill's diffs blob
+    # is never parsed, so it yields no candidates.
+    db_path = _make_db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE bills SET touches_rulespec = 0 WHERE id = 'b1'")
+    conn.commit()
+    conn.close()
+
+    def _boom():
+        raise AssertionError("client opened with nothing to hydrate")
+    monkeypatch.setattr(supabase_sync, "_client", _boom)
+
+    counts = supabase_sync.hydrate_reconciliations(db_path)
+    assert counts == {"candidates": 0, "hydrated": 0, "stale_remote": 0}
 
 
 def test_missing_remote_row_is_left_for_reconcile(tmp_path, monkeypatch):

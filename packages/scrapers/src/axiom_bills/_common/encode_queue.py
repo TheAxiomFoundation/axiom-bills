@@ -152,12 +152,13 @@ def _candidates_stale_variants(
 def _candidates_enacted_touches(
     conn: sqlite3.Connection, jurisdiction: str | None,
 ) -> list[tuple[str, str, str]]:
-    """(bill_id, citation, reason) for every encoding citation an
-    enacted/signed bill actually amends (parsed ops, applied or not)."""
+    """(bill_id, citation, reason) for every encoding citation a
+    became-law bill (enacted/signed/veto_overridden) actually amends
+    (parsed ops, applied or not)."""
     where = [
         "touches_rulespec = 1",
         "diffs IS NOT NULL",
-        "current_status IN ('enacted', 'signed')",
+        "current_status IN ('enacted', 'signed', 'veto_overridden')",
     ]
     params: list = []
     if jurisdiction:
@@ -266,7 +267,10 @@ def _run_encoder(cmd: list[str], *, tail_lines: int = 20) -> tuple[int, str]:
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
+            text=True, bufsize=1, encoding="utf-8", errors="replace",
+            # errors="replace": a stray non-UTF-8 byte in encoder output
+            # must not raise in a pump thread — a dead pump leaves the
+            # child blocked on a full pipe and t.join() hangs forever.
         )
     except OSError as exc:
         # Launch failure (binary vanished mid-queue, permissions):

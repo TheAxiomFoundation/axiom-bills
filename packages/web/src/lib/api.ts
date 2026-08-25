@@ -7,6 +7,7 @@
 import { supabase } from "./supabase";
 import type { RulespecGraph } from "./graph/rulespec-graph";
 import type { BillReconciliationRow, TopicDiff } from "./reconcile/schema";
+import { sanitizeLayerDiff } from "./reconcile/schema";
 
 export type { BillReconciliationRow } from "./reconcile/schema";
 
@@ -561,9 +562,11 @@ async function encodeQueue(billId: string): Promise<EncodeQueueRow[]> {
 async function billReconciliations(id: string): Promise<BillReconciliationRow[]> {
   // Agentic per-section verdicts (bills.bill_reconciliations, written by
   // the scrapers' `reconcile` pass). The payload JSONB is the verdict
-  // pair: { topic, section, billVsLaw, modelVsLaw }. Rows whose payload
-  // is missing either layer are skipped — a malformed row must not take
-  // the whole triage view down.
+  // pair: { topic, section, billVsLaw, modelVsLaw }. Every layer is
+  // validated against the schema vocabularies here at the fetch boundary
+  // (see sanitizeLayerDiff): rows missing a layer or carrying an unknown
+  // status are skipped, softer enums are coerced — a malformed row must
+  // not take the whole triage view down, nor poison its scoring.
   const { data, error } = await supabase
     .from("bill_reconciliations")
     .select("id, bill_id, section_citation, payload, fingerprint, model, computed_at")
@@ -573,7 +576,9 @@ async function billReconciliations(id: string): Promise<BillReconciliationRow[]>
   const out: BillReconciliationRow[] = [];
   for (const r of data ?? []) {
     const p = r.payload as Partial<TopicDiff> | null;
-    if (!p || !p.billVsLaw || !p.modelVsLaw) continue;
+    const billVsLaw = p ? sanitizeLayerDiff(p.billVsLaw) : null;
+    const modelVsLaw = p ? sanitizeLayerDiff(p.modelVsLaw) : null;
+    if (!p || !billVsLaw || !modelVsLaw) continue;
     out.push({
       id: r.id,
       bill_id: r.bill_id,
@@ -581,8 +586,8 @@ async function billReconciliations(id: string): Promise<BillReconciliationRow[]>
       payload: {
         topic: p.topic || r.section_citation,
         section: p.section || r.section_citation,
-        billVsLaw: p.billVsLaw,
-        modelVsLaw: p.modelVsLaw,
+        billVsLaw,
+        modelVsLaw,
       },
       fingerprint: r.fingerprint ?? null,
       model: r.model ?? null,

@@ -36,10 +36,13 @@ export const materialityRank: Record<Materiality, number> = {
 };
 
 export function layerScore(d: LayerDiff): number {
+  // api.billReconciliations validates the enums at the fetch boundary;
+  // the ?? 0 is defense in depth so an unknown token can never turn a
+  // score into NaN (which would make the queue sort arbitrary).
   return (
     (d.action !== "none" ? 100 : 0) +
-    statusRank[d.status] * 10 +
-    materialityRank[d.materiality]
+    (statusRank[d.status] ?? 0) * 10 +
+    (materialityRank[d.materiality] ?? 0)
   );
 }
 
@@ -67,7 +70,7 @@ export type TriagedTopic = {
 };
 
 function worstOf<T extends string>(rank: Record<T, number>, a: T, b: T): T {
-  return rank[b] > rank[a] ? b : a;
+  return (rank[b] ?? 0) > (rank[a] ?? 0) ? b : a;
 }
 
 export function worstStatusOf(a: DiffStatus, b: DiffStatus): DiffStatus {

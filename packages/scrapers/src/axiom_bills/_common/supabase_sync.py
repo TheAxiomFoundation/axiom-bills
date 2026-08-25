@@ -170,6 +170,33 @@ def _upsert(client: httpx.Client, table: str, rows: list[dict], *,
     return written
 
 
+def _tolerate_missing_table(step: Callable[[], int], *, table: str,
+                            migration: str) -> int:
+    """Run one sync step, skipping it when the REMOTE table is missing.
+
+    The newer tables (encoding_graphs, bill_reconciliations,
+    encode_queue) ship as supabase/migrations/*.sql pasted manually into
+    Studio (per the README) — a project that hasn't applied them yet
+    must degrade to a warning, mirroring how the local reads tolerate a
+    missing SQLite table. PostgREST reports an undefined relation as
+    PGRST205 / "Could not find the table"; any other error still raises.
+    """
+    try:
+        return step()
+    except RuntimeError as exc:
+        msg = str(exc)
+        if ("PGRST205" in msg or "Could not find the table" in msg
+                or ("relation" in msg and "does not exist" in msg)):
+            print(
+                f"WARNING: remote table {table} missing — apply "
+                f"supabase/migrations/{migration} in the Supabase SQL "
+                "editor; skipping this step.",
+                file=sys.stderr,
+            )
+            return 0
+        raise
+
+
 def _local(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -702,8 +729,11 @@ def sync(db_path: str) -> dict[str, int]:
         for r in graph_rows:
             r["graph"] = json.loads(r["graph"])
         # Small chunk: each row is a whole dependency graph.
-        counts["encoding_graphs"] = _upsert(
-            client, "encoding_graphs", graph_rows, on_conflict="repo", chunk=10
+        counts["encoding_graphs"] = _tolerate_missing_table(
+            lambda: _upsert(client, "encoding_graphs", graph_rows,
+                            on_conflict="repo", chunk=10),
+            table="encoding_graphs",
+            migration="20260721000000_encoding_graphs.sql",
         )
 
         # 10. Bill reconciliations — per-section agentic verdicts
@@ -722,9 +752,11 @@ def sync(db_path: str) -> dict[str, int]:
         for r in rec_rows:
             r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
             r["payload"] = json.loads(r["payload"])
-        counts["bill_reconciliations"] = _upsert(
-            client, "bill_reconciliations", rec_rows,
-            on_conflict="bill_id,section_citation", chunk=200,
+        counts["bill_reconciliations"] = _tolerate_missing_table(
+            lambda: _upsert(client, "bill_reconciliations", rec_rows,
+                            on_conflict="bill_id,section_citation", chunk=200),
+            table="bill_reconciliations",
+            migration="20260721120000_bill_reconciliations.sql",
         )
 
         # 11. Encode queue — enqueue-once rows materialized by
@@ -748,33 +780,41 @@ def sync(db_path: str) -> dict[str, int]:
             queue_rows = []
         for r in queue_rows:
             r["bill_id"] = bill_id_map.get(r["bill_id"], r["bill_id"])
-        remote_queue = _remote_rows_by_in(
-            client,
-            "encode_queue",
-            select="id,bill_id,citation,reason,status",
-            column="bill_id",
-            values=(r["bill_id"] for r in queue_rows),
-        )
-        remote_by_key = {
-            (q["bill_id"], q["citation"], q["reason"]): q
-            for q in remote_queue
-        }
-        push_rows = []
-        for r in queue_rows:
-            remote = remote_by_key.get(
-                (r["bill_id"], r["citation"], r["reason"]))
-            if remote is None:
-                push_rows.append(r)
-            elif r["status"] != "pending" and remote["status"] != "dismissed":
-                # A local --run outcome updates the remote row — unless a
-                # human dismissed it there in the meantime: dismissed is
-                # terminal and must never be overwritten, per the queue's
-                # enqueue-once contract.
-                r["id"] = remote["id"]
-                push_rows.append(r)
-        counts["encode_queue"] = _upsert(
-            client, "encode_queue", push_rows,
-            on_conflict="bill_id,citation,reason",
+
+        def _push_encode_queue() -> int:
+            remote_queue = _remote_rows_by_in(
+                client,
+                "encode_queue",
+                select="id,bill_id,citation,reason,status",
+                column="bill_id",
+                values=(r["bill_id"] for r in queue_rows),
+            )
+            remote_by_key = {
+                (q["bill_id"], q["citation"], q["reason"]): q
+                for q in remote_queue
+            }
+            push_rows = []
+            for r in queue_rows:
+                remote = remote_by_key.get(
+                    (r["bill_id"], r["citation"], r["reason"]))
+                if remote is None:
+                    push_rows.append(r)
+                elif r["status"] != "pending" and remote["status"] != "dismissed":
+                    # A local --run outcome updates the remote row — unless a
+                    # human dismissed it there in the meantime: dismissed is
+                    # terminal and must never be overwritten, per the queue's
+                    # enqueue-once contract.
+                    r["id"] = remote["id"]
+                    push_rows.append(r)
+            return _upsert(
+                client, "encode_queue", push_rows,
+                on_conflict="bill_id,citation,reason",
+            )
+
+        counts["encode_queue"] = _tolerate_missing_table(
+            _push_encode_queue,
+            table="encode_queue",
+            migration="20260721130000_encode_queue.sql",
         )
 
     local.close()
@@ -911,10 +951,14 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
     counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
     local = _local(db_path)
     try:
+        # touches_rulespec is precomputed with exactly the
+        # candidate_sections predicate — filtering on it skips the JSON
+        # parse of every non-touching bill's diffs blob.
         bill_rows = [dict(r) for r in local.execute("""
             SELECT id, jurisdiction, session_id, chamber, number, diffs
               FROM bills
              WHERE diffs IS NOT NULL
+               AND touches_rulespec = 1
         """)]
         # Probe the target table up front so a pre-060 DB degrades to a
         # no-op instead of failing mid-hydration.
