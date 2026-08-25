@@ -288,20 +288,42 @@ def test_deep_target_falls_back_to_slicing_and_is_flagged():
     assert "the amount paid is deductible" in result.after_text
 
 
-def test_undelimitable_ancestor_scope_is_declined():
-    """Corpus fell back to the enclosing section and the block's own text
-    can't be found in it. The needle occurs exactly once — but in a
-    sibling subsection the bill never named, so we must not apply it."""
+_STRIKE_63B = (
+    "Section 63(b) of the Internal Revenue Code of 1986 "
+    "(26 U.S.C. 63(b)) is amended by striking ``the standard "
+    "deduction'' and inserting ``the basic allowance''.\n"
+)
+
+
+def test_ancestor_body_never_edits_a_sibling_subsection():
+    """Corpus fell back to the enclosing section. The needle occurs
+    exactly once — but in subsection (a), which the bill never named.
+    Whether we narrow to (b) or decline, (a) must not be touched."""
     enclosing = (
         "(a) General rule. The taxpayer shall reduce the standard "
         "deduction by such amount, as described in section 151, "
         "(b) Special rule. No reduction applies."
     )
-    block = parse_bill_amendments(
-        "Section 63(b) of the Internal Revenue Code of 1986 "
-        "(26 U.S.C. 63(b)) is amended by striking ``the standard "
-        "deduction'' and inserting ``the basic allowance''.\n"
-    )[0]
+    block = parse_bill_amendments(_STRIKE_63B)[0]
+    result = apply_block(block, enclosing, _slice, body_is_exact=False)
+    assert not result.applied
+    # Scope now narrows to (b) correctly, so the honest reason is that
+    # the needle isn't in (b) — not that we couldn't find (b).
+    assert "needle not found" in result.unapplied[0][1]
+    assert result.before_text == "(b) Special rule. No reduction applies."
+    assert result.after_text == result.before_text
+    assert "basic allowance" not in result.after_text
+
+
+def test_undelimitable_ancestor_scope_is_declined():
+    """When the block's own text genuinely can't be located in the
+    enclosing body, a unique needle match is still not evidence that it
+    sits in the named subsection. Decline rather than guess."""
+    enclosing = (
+        "The taxpayer shall reduce the standard deduction by such "
+        "amount as the Secretary prescribes by regulation."
+    )
+    block = parse_bill_amendments(_STRIKE_63B)[0]
     result = apply_block(block, enclosing, _slice, body_is_exact=False)
     assert not result.applied
     assert "cannot delimit" in result.unapplied[0][1]

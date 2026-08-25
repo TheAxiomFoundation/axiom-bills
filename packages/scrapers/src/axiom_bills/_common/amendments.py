@@ -249,14 +249,64 @@ _INDENT_UNIT = "  "
 #   section 152(e)                            section number + paren
 #   section 7702B(b)                          alphanumeric section ID
 #   subparagraph (A)(ii)                      chained inside ref
-_PROTECTED_REF_RE = re.compile(
+#
+# Comma/and-chaining ("subsections (b)(1), (b)(2), and (d)") is only
+# allowed after a ref that is itself parenthesized, or after a section
+# NUMBER that already carries an attached paren ("section 151(b) and
+# (c)"). A bare number followed by a comma and a paren must NOT chain:
+# corpus renders a subsection as one flowing line, so
+#
+#     "...any deduction provided in section 199A, (4) the deduction..."
+#
+# is a cross-reference to §199A followed by a STRUCTURAL paragraph
+# marker. Chaining there swallowed "(4)" as part of the reference, the
+# marker vanished from the structure scan, and slice_subsection could
+# not find the paragraph at all. Measured across 197 corpus sections:
+# 11 such markers, every one of them eaten.
+#
+# A reference label is a short token — (b), (1), (12), (A), (ii), (VIII)
+# — never prose. Matching `\([^)]+\)` instead let the shield treat an
+# explanatory parenthetical as an attached reference: in
+#
+#   "section 152 (determined without regard to subsections (b)(1),
+#    (b)(2), and (d)(1)(B) thereof)"
+#
+# the unbalanced "(determined … (b)" was consumed as if it were
+# §152's subsection, which then hid the real list behind it and left
+# "(b)(2)" and "(d)(1)(B)" exposed as false structural markers.
+_REF_LABEL = r"\(\s*[0-9A-Za-z]{1,4}\s*\)"
+
+_REF_HEAD = (
     r"\b(?:subsection|subsections|paragraph|paragraphs|subparagraph|subparagraphs"
     r"|clause|clauses|subclause|subclauses|section|sections|subdivision|subdivisions"
     r"|title|subtitle|chapter|part|item|items)\b"
-    r"(?:\s+(?:\d+[A-Za-z]?|\([^)]+\)))"          # first ref: number or first paren
-    r"(?:\s*\([^)]+\))*"                          # chained parens
-    r"(?:\s*(?:,|and|or)\s*\([^)]+\)"             # comma/and-separated refs
-    r"(?:\s*\([^)]+\))*)*",
+)
+# Connector between chained refs. Handles ", (b)", " and (c)", ", or (d)"
+# and the Oxford form ", and (e)" — the last of which the previous
+# pattern missed, leaving the tail of every three-or-more-item list
+# ("clauses (i), (iii), and (iv)") unshielded and free to be read as a
+# structural break.
+_REF_CHAIN = (
+    r"(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)"
+    + _REF_LABEL + r"(?:\s*" + _REF_LABEL + r")*)*"
+)
+# After a section NUMBER carrying an attached paren, a chain may only be
+# joined by and/or — never by a bare comma. "section 151(b) and (c)" is
+# one reference to two subsections; "section 170(p), (5)" is a reference
+# to §170(p) followed by STRUCTURAL paragraph (5). Allowing the bare
+# comma here swallowed "(5)", which both hid paragraph (5) and made
+# paragraph (4)'s slice over-run into it.
+_REF_CHAIN_CONJ = (
+    r"(?:\s*,?\s*(?:and|or)\s+"
+    + _REF_LABEL + r"(?:\s*" + _REF_LABEL + r")*)*"
+)
+_PROTECTED_REF_RE = re.compile(
+    _REF_HEAD +
+    r"(?:"
+    r"\s+\d+[A-Za-z]?(?:\s*" + _REF_LABEL + r")+" + _REF_CHAIN_CONJ +
+    r"|\s+\d+[A-Za-z]?"                                   # bare number: no chaining
+    r"|\s*" + _REF_LABEL + r"(?:\s*" + _REF_LABEL + r")*" + _REF_CHAIN +
+    r")",
     re.IGNORECASE,
 )
 

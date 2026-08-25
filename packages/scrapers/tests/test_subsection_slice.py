@@ -78,3 +78,90 @@ def test_stitch_with_modification():
     # other subsections untouched
     assert "(a) Allowance of deduction" in rebuilt
     assert "(c) Special rule for decedents" in rebuilt
+
+
+# ────────────────────────────────────────────────────────────────────
+#  Cross-reference shield boundaries
+#
+#  The shield stops a cross-reference ("subsection (a)") from reading as
+#  a structural break. Over-reach costs the opposite: corpus renders a
+#  subsection as one flowing line, so a genuine paragraph marker often
+#  sits right after a citation — "…provided in section 199A, (4) the
+#  deduction…". Swallowing that "(4)" hid the paragraph from the
+#  structure scan entirely.
+# ────────────────────────────────────────────────────────────────────
+
+from axiom_bills._common.amendments import _PROTECTED_REF_RE  # noqa: E402
+
+
+def _shielded(text):
+    return [m.group(0) for m in _PROTECTED_REF_RE.finditer(text)]
+
+
+def test_bare_number_does_not_chain_into_a_structural_marker():
+    assert _shielded(
+        "any deduction provided in section 199A, (4) the deduction"
+    ) == ["section 199A"]
+
+
+def test_attached_paren_does_not_comma_chain_into_a_marker():
+    """"section 170(p), (5)" is a reference followed by paragraph (5) —
+    only and/or joins a genuine multi-subsection reference."""
+    assert _shielded("the deduction provided in section 170(p), (5) the") \
+        == ["section 170(p)"]
+
+
+def test_conjunction_still_chains_after_a_section_number():
+    assert _shielded("as described in section 151(b) and (c) of such Code") \
+        == ["section 151(b) and (c)"]
+
+
+def test_paren_headed_lists_shield_whole_including_oxford_tail():
+    assert _shielded("subsections (b)(1), (b)(2), and (d)(1)(B) thereof") \
+        == ["subsections (b)(1), (b)(2), and (d)(1)(B)"]
+    assert _shielded("by striking clauses (i), (iii), and (iv)") \
+        == ["clauses (i), (iii), and (iv)"]
+
+
+def test_prose_parenthetical_is_not_read_as_an_attached_reference():
+    """A reference label is a short token. Treating "(determined without
+    regard to subsections (b)" as §152's subsection hid the real list
+    behind it and exposed its members as false structural markers."""
+    got = _shielded(
+        "a dependent, as defined in section 152 (determined without "
+        "regard to subsections (b)(1), (b)(2), and (d)(1)(B) thereof)"
+    )
+    assert got == ["section 152", "subsections (b)(1), (b)(2), and (d)(1)(B)"]
+
+
+def test_simple_reference_shapes_are_unchanged():
+    for text, want in [
+        ("under subsection (a)", ["subsection (a)"]),
+        ("under section 152", ["section 152"]),
+        ("under section 152(e)", ["section 152(e)"]),
+        ("under section 7702B(b)", ["section 7702B(b)"]),
+        ("in subparagraph (A)(ii)", ["subparagraph (A)(ii)"]),
+        ("in paragraphs (3) and (4)", ["paragraphs (3) and (4)"]),
+    ]:
+        assert _shielded(text) == want, text
+
+
+def test_flattened_subsection_yields_every_paragraph_marker():
+    """The 26 USC 63(b) shape: each paragraph ends in a citation, so the
+    next paragraph's marker directly follows one. All seven must be
+    reachable — four of them were not."""
+    body = (
+        "(b) Individuals who do not itemize their deductions In the case "
+        "of an individual, the term “taxable income” means adjusted gross "
+        "income, minus— (1) the standard deduction, (2) the deduction for "
+        "personal exemptions provided in section 151, (3) any deduction "
+        "provided in section 199A, (4) the deduction provided in section "
+        "170(p), (5) the deduction provided in section 224, (6) the "
+        "deduction provided in section 225 and 1 1 So in original. "
+        "Probably should be preceded by a comma. (7) so much of the "
+        "deduction allowed by section 163(a) as does not exceed."
+    )
+    for n in range(1, 8):
+        got, _ = slice_subsection(body, f"26 USC 63(b)({n})")
+        assert got is not None, f"paragraph ({n}) not found"
+        assert got.lstrip().startswith(f"({n})"), (n, got[:40])
