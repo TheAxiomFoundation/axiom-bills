@@ -16,6 +16,7 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from .citation_scope import is_ancestor, op_affects_encoding
@@ -225,6 +226,9 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     return {
         "sections": sections,
         "source_text_sha256": text_sha,
+        # When this payload was computed. hydrate-diffs dates a section it
+        # keeps from an earlier payload with it.
+        "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "statutory_effective_from": (
             statutory_date.isoformat() if statutory_date else None
         ),

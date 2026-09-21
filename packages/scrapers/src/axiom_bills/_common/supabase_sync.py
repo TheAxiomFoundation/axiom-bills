@@ -364,8 +364,10 @@ def _preserve_into_rows(client: httpx.Client, bills_rows: list[dict]) -> int:
 
     ``bills_rows`` already carry remote ids. Any row about to overwrite a
     remote section that had matched corpus text with a corpus miss gets
-    the stored section back (see section_preservation). A run that
-    hydrated first has nothing left to preserve, so this is a no-op then.
+    the stored section back (see section_preservation). After
+    ``hydrate-diffs`` it keeps nothing, but it is not free: a bill that
+    still holds a miss the stored payload never matched stays a
+    candidate, so its stored row is read again.
     """
     candidates = [r for r in bills_rows if has_corpus_miss(r.get("diffs"))]
     if not candidates:
@@ -900,8 +902,18 @@ def hydrate_stored_sections(db_path: str) -> dict[str, int]:
     ``precompute-diffs`` and before ``precompute-variants``, so variants,
     the encode queue and the touch flags all see the preserved sections.
     """
-    counts = {"candidates": 0, "bills_hydrated": 0, "sections_preserved": 0}
+    counts = {"candidates": 0, "bills_hydrated": 0,
+              "sections_preserved": 0, "sections_text_only": 0}
     local = _local(db_path)
+    try:
+        return _hydrate_stored_sections(local, counts)
+    finally:
+        local.close()
+
+
+def _hydrate_stored_sections(
+    local: sqlite3.Connection, counts: dict[str, int],
+) -> dict[str, int]:
     try:
         pending = [
             dict(r) for r in local.execute("""
@@ -912,7 +924,6 @@ def hydrate_stored_sections(db_path: str) -> dict[str, int]:
         ]
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc) or "no such column" in str(exc):
-            local.close()
             return counts
         raise
     for row in pending:
@@ -920,7 +931,6 @@ def hydrate_stored_sections(db_path: str) -> dict[str, int]:
     pending = [r for r in pending if has_corpus_miss(r["diffs"])]
     counts["candidates"] = len(pending)
     if not pending:
-        local.close()
         return counts
 
     has_flags = _has_column(local, "bills", "touches_rulespec")
@@ -967,8 +977,9 @@ def hydrate_stored_sections(db_path: str) -> dict[str, int]:
             )
         counts["bills_hydrated"] += 1
         counts["sections_preserved"] += kept
+        counts["sections_text_only"] += sum(
+            1 for s in merged["sections"] if s.get("corpus_diff_dropped"))
     local.commit()
-    local.close()
     return counts
 
 

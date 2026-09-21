@@ -1,12 +1,12 @@
 """A corpus miss must not overwrite a section an earlier run matched.
 
 axiom-corpus stopped serving most of the US Code in July 2026 (serving
-moved to RuleSpec-cited scopes), and `corpus_client` reports a failed
-lookup the same way as an absent row. Either way a fresh CI run computes
-"no corpus text" for a section whose stored diff holds real statutory
-text. These tests pin the merge that keeps the stored section, and the
-two places it runs: `hydrate-diffs` and the `sync-supabase` backstop.
-Supabase is never contacted.
+moved to RuleSpec-cited scopes). A fresh CI run then computes "no corpus
+text" for a section whose stored diff holds real statutory text. (An
+outage is a different case: `corpus_client` raises `CorpusUnavailable`
+and the run stops.) These tests pin the merge that keeps the stored
+section, and the two places it runs: `hydrate-diffs` and the
+`sync-supabase` backstop. Supabase is never contacted.
 """
 
 from __future__ import annotations
@@ -16,8 +16,11 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from axiom_bills._common import supabase_sync
 from axiom_bills._common.section_preservation import (
+    NOT_REAPPLIED_NOTE,
     has_corpus_miss,
     preserve_stored_sections,
     touch_flags,
@@ -162,19 +165,96 @@ def test_stored_miss_is_not_preserved():
     assert merged["sections"][0]["in_corpus"] is False
 
 
-def test_changed_bill_text_with_changed_instruction_is_not_preserved():
+NEW_OP = {**OP, "payload": "90 days",
+          "raw": "by striking “30 days” and inserting “90 days”"}
+
+
+def _assert_text_only(section: dict, ops: list[dict]) -> None:
+    """Corpus facts from the stored section, operations from the fresh
+    one, nothing applied, no diff."""
+    stored = _matched()
+    for field in ("in_corpus", "citation_path", "heading", "current_text",
+                  "matched_corpus_path", "source_url", "sliced_subsection"):
+        assert section[field] == stored[field], field
+    assert section["corpus_stale"] is True
+    assert section["corpus_diff_dropped"] is True
+    assert section["diff"] == []
+    assert section["applied_ops"] == []
+    assert section["applied_text"] == stored["current_text"]
+    assert section["unapplied_ops"] == [
+        {**op, "note": NOT_REAPPLIED_NOTE} for op in ops
+    ]
+    assert section["axiom_url"] is None
+
+
+def test_changed_instruction_keeps_the_text_and_drops_the_diff():
     """The stored diff answers a different instruction: showing it would
-    present an amendment the bill no longer makes."""
-    changed = _missed(unapplied_ops=[{**OP, "payload": "90 days",
-                                      "raw": "by striking “30 days” "
-                                             "and inserting “90 days”"}])
-    fresh = _payload(changed, sha="sha-2")
+    present an amendment the bill no longer makes. The current-law text
+    is still the text of this citation, so that much is kept."""
+    fresh = _payload(_missed(unapplied_ops=[dict(NEW_OP)]), sha="sha-2")
     stored = _payload(_matched(), sha="sha-1")
 
     merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
 
-    assert kept == 0
-    assert merged["sections"][0]["in_corpus"] is False
+    assert kept == 1
+    _assert_text_only(merged["sections"][0], [NEW_OP])
+
+
+def test_unchanged_bill_text_does_not_vouch_for_a_changed_parse():
+    """The parser moves between runs. Same bill text, but today's parse
+    reads a second operation the stored one never saw: the stored diff
+    must not come back as the answer to both."""
+    second = {**OP, "needle": "December 31, 2025",
+              "payload": "December 31, 2030",
+              "raw": "by striking “December 31, 2025” and inserting "
+                     "“December 31, 2030”"}
+    fresh = _payload(_missed(unapplied_ops=[dict(OP), dict(second)]),
+                     sha="sha-1")
+    stored = _payload(_matched(), sha="sha-1")
+
+    merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+    assert kept == 1
+    _assert_text_only(merged["sections"][0], [OP, second])
+
+
+def test_same_raw_text_parsed_differently_is_a_changed_parse():
+    """Equal `raw` is not enough: the parse fields have to match too."""
+    reparsed = {**OP, "needle": "30 days after"}
+    fresh = _payload(_missed(unapplied_ops=[reparsed]), sha="sha-1")
+    stored = _payload(_matched(), sha="sha-1")
+
+    merged, _ = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+    _assert_text_only(merged["sections"][0], [reparsed])
+
+
+def test_application_by_products_do_not_count_as_a_changed_parse():
+    """`note` and `scope_source` come from applying an op, not parsing it."""
+    stored_section = _matched(
+        applied_ops=[],
+        unapplied_ops=[{**OP, "note": "needle not found",
+                        "scope_source": "heuristic"}])
+    fresh = _payload(_missed(), sha="sha-1")
+
+    merged, kept = preserve_stored_sections(
+        fresh, _payload(stored_section, sha="sha-1"), stored_as_of="x")
+
+    assert kept == 1
+    assert "corpus_diff_dropped" not in merged["sections"][0]
+    assert merged["sections"][0]["unapplied_ops"][0]["note"] == "needle not found"
+
+
+def test_a_text_only_section_survives_the_next_run_unchanged():
+    fresh = _payload(_missed(unapplied_ops=[dict(NEW_OP)]), sha="sha-1")
+    first, _ = preserve_stored_sections(
+        fresh, _payload(_matched(), sha="sha-1"), stored_as_of="2026-07-02")
+
+    second, kept = preserve_stored_sections(
+        fresh, first, stored_as_of="2026-09-20")
+
+    assert kept == 1
+    assert second["sections"][0] == first["sections"][0]
 
 
 def test_changed_bill_text_with_same_instruction_is_preserved():
@@ -197,14 +277,74 @@ def test_missing_sha_falls_back_to_the_instructions():
     assert kept == 1
 
 
-def test_changed_text_and_no_parsed_ops_is_not_preserved():
-    """With nothing to compare, 'same instruction' cannot be shown."""
+def test_changed_text_and_no_parsed_ops_keeps_the_text_only():
+    """With nothing to compare, 'same instruction' cannot be shown, so
+    the stored diff does not come back. The text still does."""
     fresh = _payload(_missed(unapplied_ops=[]), sha="sha-2")
     stored = _payload(_matched(applied_ops=[]), sha="sha-1")
 
-    _, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
+    merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+    assert kept == 1
+    _assert_text_only(merged["sections"][0], [])
+
+
+def test_ops_with_empty_raw_need_an_unchanged_bill_text():
+    """Ops that carry no `raw` cannot show two sections are the same one."""
+    blank = {**OP, "raw": ""}
+    stored = _payload(_matched(applied_ops=[dict(blank)]), sha="sha-1")
+
+    whole, _ = preserve_stored_sections(
+        _payload(_missed(unapplied_ops=[dict(blank)]), sha="sha-1"),
+        stored, stored_as_of="x")
+    text_only, _ = preserve_stored_sections(
+        _payload(_missed(unapplied_ops=[dict(blank)]), sha="sha-2"),
+        stored, stored_as_of="x")
+
+    assert "corpus_diff_dropped" not in whole["sections"][0]
+    assert text_only["sections"][0]["corpus_diff_dropped"] is True
+
+
+def test_stored_match_without_text_is_not_preserved():
+    for empty in (None, ""):
+        fresh = _payload(_missed())
+        stored = _payload(_matched(current_text=empty))
+
+        merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+        assert kept == 0
+        assert merged["sections"][0]["in_corpus"] is False
+
+
+def test_section_without_a_citation_is_left_alone():
+    fresh = _payload(_missed(citation=None))
+    stored = _payload(_matched(citation=None), _matched())
+
+    merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
 
     assert kept == 0
+    assert merged == fresh
+
+
+def test_computed_at_dates_the_kept_text_exactly():
+    stored = {**_payload(_matched()), "computed_at": "2026-07-02T13:58:48+00:00"}
+
+    merged, _ = preserve_stored_sections(
+        _payload(_missed()), stored, stored_as_of="2026-08-15T00:00:00+00:00")
+
+    section = merged["sections"][0]
+    assert section["corpus_text_as_of"] == "2026-07-02T13:58:48+00:00"
+    assert section["corpus_text_as_of_exact"] is True
+
+
+def test_without_computed_at_the_row_stamp_is_only_a_bound():
+    merged, _ = preserve_stored_sections(
+        _payload(_missed()), _payload(_matched()),
+        stored_as_of="2026-08-15T00:00:00+00:00")
+
+    section = merged["sections"][0]
+    assert section["corpus_text_as_of"] == "2026-08-15T00:00:00+00:00"
+    assert section["corpus_text_as_of_exact"] is False
 
 
 def test_repeated_citation_matches_by_position():
@@ -248,13 +388,16 @@ def test_encoding_fields_come_from_the_fresh_run():
     """They derive from the rulespec index, not from corpus text."""
     encoding = {"repo": "rulespec-us", "kind": "statute", "citation": OSHA,
                 "file_path": "statutes/29/655/b.yaml", "github_url": "u"}
-    fresh = _payload(_missed(encoding=encoding, has_rulespec=True))
-    stored = _payload(_matched(encoding=None, has_rulespec=False))
+    fresh = _payload(_missed(encoding=encoding, has_rulespec=True,
+                             encoding_backlog=True))
+    stored = _payload(_matched(encoding=None, has_rulespec=False,
+                               encoding_backlog=False))
 
     merged, _ = preserve_stored_sections(fresh, stored, stored_as_of="x")
 
     assert merged["sections"][0]["encoding"] == encoding
     assert merged["sections"][0]["has_rulespec"] is True
+    assert merged["sections"][0]["encoding_backlog"] is True
 
 
 def test_original_as_of_date_survives_later_runs():
@@ -376,12 +519,51 @@ def test_hydrate_writes_preserved_section_and_flags(tmp_path, monkeypatch):
     counts = supabase_sync.hydrate_stored_sections(db_path)
 
     assert counts == {"candidates": 1, "bills_hydrated": 1,
-                      "sections_preserved": 1}
+                      "sections_preserved": 1, "sections_text_only": 0}
     bill = _local_bill(db_path)
     section = json.loads(bill["diffs"])["sections"][0]
     assert section["corpus_stale"] is True
     assert section["current_text"] == "within 30 days after publication"
     assert bill["touches_corpus"] == 1
+
+
+def test_hydrate_counts_text_only_keeps_and_clears_the_diff(tmp_path, monkeypatch):
+    db_path = _make_db(tmp_path, _payload(_missed(unapplied_ops=[dict(NEW_OP)])))
+    _patch_remote(monkeypatch, {"remote-b1": {
+        "id": "remote-b1", "diffs": _payload(_matched()),
+        "last_scraped_at": "2026-07-02T13:58:48+00:00"}})
+
+    counts = supabase_sync.hydrate_stored_sections(db_path)
+
+    assert counts == {"candidates": 1, "bills_hydrated": 1,
+                      "sections_preserved": 1, "sections_text_only": 1}
+    bill = _local_bill(db_path)
+    _assert_text_only(json.loads(bill["diffs"])["sections"][0], [NEW_OP])
+    assert bill["touches_corpus"] == 1
+
+
+def test_hydrate_closes_the_database_when_credentials_are_missing(
+        tmp_path, monkeypatch):
+    db_path = _make_db(tmp_path, _payload(_missed()))
+    opened: list[sqlite3.Connection] = []
+    real_local = supabase_sync._local
+
+    def tracking_local(path):
+        conn = real_local(path)
+        opened.append(conn)
+        return conn
+
+    def no_credentials():
+        raise RuntimeError("Set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+
+    monkeypatch.setattr(supabase_sync, "_local", tracking_local)
+    monkeypatch.setattr(supabase_sync, "_client", no_credentials)
+
+    with pytest.raises(RuntimeError, match="SUPABASE_URL"):
+        supabase_sync.hydrate_stored_sections(db_path)
+
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")
 
 
 def test_hydrate_skips_the_network_when_nothing_missed(tmp_path, monkeypatch):
@@ -391,7 +573,7 @@ def test_hydrate_skips_the_network_when_nothing_missed(tmp_path, monkeypatch):
     counts = supabase_sync.hydrate_stored_sections(db_path)
 
     assert counts == {"candidates": 0, "bills_hydrated": 0,
-                      "sections_preserved": 0}
+                      "sections_preserved": 0, "sections_text_only": 0}
     assert requested == []
 
 
@@ -415,7 +597,8 @@ def test_hydrate_tolerates_a_db_without_diffs(tmp_path, monkeypatch):
     _patch_remote(monkeypatch, {})
 
     assert supabase_sync.hydrate_stored_sections(str(path)) == {
-        "candidates": 0, "bills_hydrated": 0, "sections_preserved": 0}
+        "candidates": 0, "bills_hydrated": 0, "sections_preserved": 0,
+        "sections_text_only": 0}
 
 
 # ------------------------------------------------------ sync-supabase backstop
@@ -428,7 +611,8 @@ def test_sync_backstop_restores_section_and_flags(monkeypatch):
             "id": "remote-b1", "diffs": _payload(_matched()),
             "last_scraped_at": "2026-07-02T13:58:48+00:00"}},
     )
-    rows = [{"id": "remote-b1", "diffs": _payload(_missed()),
+    rows = [{"id": "remote-b1",
+             "diffs": _payload(_missed(encoding_backlog=True)),
              "touches_corpus": False, "touches_rulespec": False,
              "needs_new_encoding": False}]
 
@@ -437,6 +621,19 @@ def test_sync_backstop_restores_section_and_flags(monkeypatch):
     assert kept == 1
     assert rows[0]["diffs"]["sections"][0]["corpus_stale"] is True
     assert rows[0]["touches_corpus"] is True
+    assert rows[0]["needs_new_encoding"] is True
+
+
+def test_sync_backstop_fails_when_the_stored_rows_cannot_be_read(monkeypatch):
+    """A run that cannot read the stored sections must not replace them."""
+    def unreadable(client, ids):
+        raise RuntimeError("Supabase read from bills failed (500)")
+
+    monkeypatch.setattr(supabase_sync, "_stored_diffs_by_bill", unreadable)
+    rows = [{"id": "remote-b1", "diffs": _payload(_missed())}]
+
+    with pytest.raises(RuntimeError, match="failed"):
+        supabase_sync._preserve_into_rows(object(), rows)
 
 
 def test_sync_backstop_does_not_add_flag_columns_it_was_not_given(monkeypatch):

@@ -11,10 +11,17 @@ miss does mean is that the corpus serves neither the path nor any
 ancestor today. That set can shrink: axiom-corpus moved US serving to
 RuleSpec-cited scopes in July 2026.
 
-This module is the pure merge. It prefers the stored section only when
-it can show the stored diff still answers the same amendment
-instruction, marks what it kept as stale, and never touches a section
-the fresh run matched.
+This module is the pure merge. It never touches a section the fresh
+run matched, and it marks everything it keeps as stale. What it keeps
+depends on whether the stored diff still answers the instruction:
+
+* the fresh parse reads the same operations as the stored one: the whole
+  stored section comes back, diff included;
+* the parse changed (the parser moves between runs, and an unchanged
+  bill text does not mean unchanged operations): only the corpus facts
+  come back, which are the current-law text, heading, path and source.
+  The operations are the fresh ones, none of them applied, and there is
+  no diff, because the stored diff answers a parse that no longer holds.
 """
 from __future__ import annotations
 
@@ -25,6 +32,24 @@ from typing import Any
 # Derived from the rulespec index, not from corpus text, so the fresh
 # run's values are the current ones even when its corpus lookup missed.
 _ENCODING_FIELDS = ("encoding", "has_rulespec", "encoding_backlog")
+
+# What the corpus said about the section. Independent of how the bill's
+# instructions parse, so they survive a changed parse.
+_CORPUS_FIELDS = (
+    "in_corpus", "exact_corpus_match", "sliced_subsection",
+    "matched_corpus_path", "heading", "citation_path", "current_text",
+    "source_url",
+)
+
+# What the parser reads out of an instruction. ``scope_source`` and
+# ``note`` are by-products of applying it, so they are not compared.
+_OP_PARSE_FIELDS = (
+    "kind", "target", "needle", "payload", "anchor", "redesignate_to", "raw",
+)
+
+NOT_REAPPLIED_NOTE = (
+    "not applied: the corpus did not serve this section at this refresh"
+)
 
 
 def touch_flags(sections: list[dict]) -> tuple[bool, bool, bool]:
@@ -58,22 +83,52 @@ def has_corpus_miss(payload: dict | None) -> bool:
     )
 
 
-def _op_raws(section: dict) -> list[str]:
-    ops = (section.get("applied_ops") or []) + (section.get("unapplied_ops") or [])
-    return sorted((op.get("raw") or "").strip() for op in ops)
+def _all_ops(section: dict) -> list[dict]:
+    return (section.get("applied_ops") or []) + (section.get("unapplied_ops") or [])
+
+
+def _op_keys(section: dict) -> list[tuple[str, ...]]:
+    return sorted(
+        tuple(str(op.get(field) or "").strip() for field in _OP_PARSE_FIELDS)
+        for op in _all_ops(section)
+    )
 
 
 def _same_instruction(fresh: dict, stored: dict, *, same_bill_text: bool) -> bool:
     """Is the stored diff still the answer to the fresh section's ops?
 
-    Identical bill text settles it: same text, same citation, same
-    position. Otherwise fall back to the parsed instructions themselves,
-    which survive a re-fetch that changed unrelated parts of the bill.
+    The parsed operations have to match field for field. An unchanged
+    bill text is not enough: the parser changes between runs, and a newer
+    parse of the same text can read more operations, or different ones.
+
+    Matching operations settle it when there are any to compare. With
+    none on either side, only an unchanged bill text shows the two
+    sections are the same one.
     """
-    if same_bill_text:
-        return True
-    fresh_raws = _op_raws(fresh)
-    return bool(fresh_raws) and any(fresh_raws) and fresh_raws == _op_raws(stored)
+    fresh_keys = _op_keys(fresh)
+    if fresh_keys != _op_keys(stored):
+        return False
+    return same_bill_text or any(key[-1] for key in fresh_keys)
+
+
+def _text_only(fresh: dict, stored: dict) -> dict:
+    """The fresh section, carrying the stored section's corpus facts.
+
+    Same shape ``precompute-diffs`` writes when it finds the text and can
+    apply nothing: every operation unapplied, ``applied_text`` equal to
+    ``current_text``, no diff.
+    """
+    kept = copy.deepcopy(fresh)
+    for field in _CORPUS_FIELDS:
+        kept[field] = copy.deepcopy(stored.get(field))
+    kept["applied_text"] = kept["current_text"]
+    kept["diff"] = []
+    kept["applied_ops"] = []
+    kept["unapplied_ops"] = [
+        {**op, "note": NOT_REAPPLIED_NOTE} for op in _all_ops(fresh)
+    ]
+    kept["corpus_diff_dropped"] = True
+    return kept
 
 
 def preserve_stored_sections(
@@ -87,21 +142,27 @@ def preserve_stored_sections(
     Returns ``(payload, n_preserved)``. ``fresh`` is never mutated; with
     nothing to preserve it is returned as is.
 
-    A stored section replaces a fresh one only when all of these hold:
+    A stored section is used only when all of these hold:
 
-    * the fresh section has ``in_corpus`` false;
+    * the fresh section has a citation and ``in_corpus`` false;
     * the stored section at the same citation and the same position
       among sections with that citation has ``in_corpus`` true and
       carries ``current_text``;
     * both payloads hold the same number of sections for that citation,
-      so position is unambiguous;
-    * the bill text is unchanged, or the parsed instructions are.
+      so position is unambiguous.
 
-    ``stored_as_of`` is the remote row's ``last_scraped_at``. The scrape
-    stamps that column and the payload carries no computation time, so it
-    is the latest the stored text can date from, not the exact time. A
-    section already marked stale keeps its original date through later
-    runs.
+    When the parsed operations also match (see ``_same_instruction``)
+    the whole stored section comes back. Otherwise only its corpus facts
+    do, under the fresh operations, marked ``corpus_diff_dropped``.
+
+    ``corpus_text_as_of`` is the stored payload's ``computed_at`` when it
+    has one, and ``corpus_text_as_of_exact`` is then true. Payloads
+    written before ``computed_at`` existed fall back to ``stored_as_of``,
+    the remote row's ``last_scraped_at``. The scrape stamps that column
+    before the run computes its diffs, and a run that computes no diffs
+    moves it without touching the payload, so it only says the text comes from a
+    refresh that started on or before that time. A section already marked
+    stale keeps its original date through later runs.
     """
     if not fresh or not stored:
         return fresh, 0
@@ -127,22 +188,34 @@ def preserve_stored_sections(
         seen[citation] += 1
         candidates = stored_by_citation.get(citation) or []
         keep = (
-            not section.get("in_corpus")
+            bool(citation)
+            and not section.get("in_corpus")
             and len(candidates) == fresh_counts[citation]
             and candidates[position].get("in_corpus")
             and candidates[position].get("current_text")
-            and _same_instruction(section, candidates[position],
-                                  same_bill_text=same_bill_text)
         )
         if not keep:
             merged.append(section)
             continue
-        kept = copy.deepcopy(candidates[position])
-        for field in _ENCODING_FIELDS:
-            if field in section:
-                kept[field] = section[field]
+        source = candidates[position]
+        if _same_instruction(section, source, same_bill_text=same_bill_text):
+            kept = copy.deepcopy(source)
+            for field in _ENCODING_FIELDS:
+                if field in section:
+                    kept[field] = section[field]
+        else:
+            kept = _text_only(section, source)
         kept["corpus_stale"] = True
-        kept["corpus_text_as_of"] = kept.get("corpus_text_as_of") or stored_as_of
+        if source.get("corpus_text_as_of"):
+            kept["corpus_text_as_of"] = source["corpus_text_as_of"]
+            kept["corpus_text_as_of_exact"] = bool(
+                source.get("corpus_text_as_of_exact"))
+        elif stored.get("computed_at"):
+            kept["corpus_text_as_of"] = stored["computed_at"]
+            kept["corpus_text_as_of_exact"] = True
+        else:
+            kept["corpus_text_as_of"] = stored_as_of
+            kept["corpus_text_as_of_exact"] = False
         # The corpus no longer serves this path, so the Axiom link would
         # land on a not-found page. ``source_url`` (the official source)
         # still stands.

@@ -58,7 +58,9 @@ export type MatchedCorpus = {
   citation: string;
   citation_path: string;
   heading: string | null;
-  axiom_url: string;
+  // Null when a refresh kept this section from an earlier run because
+  // the corpus no longer serves it: there is no Axiom page to link to.
+  axiom_url: string | null;
 };
 
 export type BillRow = {
@@ -171,10 +173,16 @@ export type BillDiffSection = {
   axiom_url: string | null;
   source_url: string | null;
   // Set when the live corpus no longer answered for this section and the
-  // refresh kept the section an earlier run had matched. The text and
-  // diff date from `corpus_text_as_of` or earlier, not from today's corpus.
+  // refresh kept what an earlier run had matched. The text is from
+  // `corpus_text_as_of`, not from today's corpus. When
+  // `corpus_text_as_of_exact` is false that date is only a bound: the
+  // text comes from a refresh that started on or before it.
   corpus_stale?: boolean;
   corpus_text_as_of?: string | null;
+  corpus_text_as_of_exact?: boolean;
+  // The bill's instructions parse differently now than when the text was
+  // kept, so the stored diff was dropped and no operation is applied.
+  corpus_diff_dropped?: boolean;
 };
 
 export type BillDiffs = { sections: BillDiffSection[] };
@@ -212,10 +220,6 @@ export type RecentRow = {
   source_url: string;
 };
 
-const AXIOM_APP_URL =
-  (import.meta.env.VITE_AXIOM_APP_URL as string | undefined) ??
-  "https://app.axiom-foundation.org";
-
 // ─── Internal helpers ───────────────────────────────────────────────
 
 function buildMatchedForBill(diffs: BillDiffs | null) {
@@ -251,7 +255,7 @@ function buildMatchedForBill(diffs: BillDiffs | null) {
         citation: sec.citation,
         citation_path: sec.citation_path,
         heading: sec.heading,
-        axiom_url: sec.axiom_url ?? `${AXIOM_APP_URL}/${sec.citation_path}`,
+        axiom_url: sec.axiom_url,
       });
     }
   }
@@ -327,10 +331,7 @@ async function fetchMatchedSummary(ids: string[]): Promise<Map<string, MatchedSu
       .in("id", ids);
     if (error || !data) return out;
     for (const r of data as any[]) {
-      const matched_corpus = ((r.matched_corpus ?? []) as MatchedCorpus[]).map((c) => ({
-        ...c,
-        axiom_url: c.axiom_url ?? `${AXIOM_APP_URL}/${c.citation_path}`,
-      }));
+      const matched_corpus = (r.matched_corpus ?? []) as MatchedCorpus[];
       out.set(r.id, {
         matched_encodings: (r.matched_encodings ?? []) as MatchedEncoding[],
         matched_corpus,

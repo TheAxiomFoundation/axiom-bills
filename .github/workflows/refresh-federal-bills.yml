@@ -178,10 +178,16 @@ jobs:
             # Keep sections an earlier run matched to corpus text when the
             # live corpus no longer serves them (a corpus outage already
             # stops precompute-diffs, so a miss is a real empty answer).
-            # Before precompute-variants, so variants see the preserved
-            # text. Fatal on purpose: a run that cannot read
-            # the stored sections must not go on to replace them.
-            uv run --project packages/scrapers axiom-bills hydrate-diffs
+            # Before precompute-variants, so variants and the encode queue
+            # are computed from the same sections the sync will write.
+            # Fatal for that reason (sync-supabase applies the same merge,
+            # so the stored text is safe either way), with one retry so a
+            # single failed read does not drop the run.
+            uv run --project packages/scrapers axiom-bills hydrate-diffs || {
+              echo "::warning::hydrate-diffs failed once - retrying in 30s."
+              sleep 30
+              uv run --project packages/scrapers axiom-bills hydrate-diffs
+            }
             uv run --project packages/scrapers axiom-bills precompute-variants --jurisdiction us
             # Reuse LLM proposals already in Supabase whose inputs are
             # unchanged; only propose for genuinely new/changed variants.

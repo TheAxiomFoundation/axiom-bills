@@ -165,13 +165,23 @@ export-variants --out ./patches        # patched YAML + manifest for downstream
 `precompute-diffs` rebuilds every section from the live corpus, and a
 fresh database (every CI run) has nothing else to go on. When the corpus
 does not serve a section that an earlier run matched, `hydrate-diffs`
-puts the stored section back and marks it `corpus_stale`, with
-`corpus_text_as_of` set to the stored row's `last_scraped_at`. It keeps
-a stored section only when the bill text is unchanged or the parsed
-instructions are identical, and never touches a section the fresh run
-matched. `sync-supabase` applies the same merge as a backstop, so a run
-that skips `hydrate-diffs` still cannot overwrite matched text with a
-miss. The web app labels these sections.
+keeps what that run stored and marks it `corpus_stale`. It never touches
+a section the fresh run matched.
+
+- When today's parse reads the same operations as the stored one, the
+  whole stored section comes back, diff included.
+- When the parse changed (the parser moves between runs, so an unchanged
+  bill text does not mean unchanged operations), only the corpus facts
+  come back: the current-law text, heading, path and source. The
+  operations are today's, none applied, there is no diff, and the
+  section is marked `corpus_diff_dropped`.
+
+`corpus_text_as_of` is the stored payload's `computed_at`. Payloads
+written before that field existed fall back to the row's
+`last_scraped_at`, which is only a bound, and `corpus_text_as_of_exact`
+is then false. `sync-supabase` applies the same merge as a backstop, so
+a run that skips `hydrate-diffs` still cannot overwrite matched text
+with a miss. The web app labels these sections.
 
 `fetch-texts` prefers HTML > XML > TXT > PDF; PDF text **is** fetched
 (extracted via pypdf — scanned/encrypted PDFs are skipped).

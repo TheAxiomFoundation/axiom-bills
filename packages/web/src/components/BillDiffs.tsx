@@ -6,10 +6,10 @@ import {
   type BillDiffs as TDiffs,
   type RuleVariant,
 } from "../lib/api";
-import { corpusStaleNote } from "../lib/corpus-stale";
 import { clean, parseScalarNote } from "../lib/variant-text";
 import { sliceRulesBySource } from "../lib/yaml-slice";
 import { BeforeAfter } from "./BeforeAfter";
+import { corpusStaleNote } from "../lib/corpus-stale";
 
 // Card-based rendering of the touched rules (parses the YAML with the
 // `yaml` package — lazy so the parser stays out of the main bundle).
