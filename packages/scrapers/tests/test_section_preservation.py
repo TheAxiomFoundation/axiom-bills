@@ -782,6 +782,38 @@ def test_text_only_section_does_not_keep_a_verdict_for_a_changed_instruction():
     assert section_fingerprint(again["sections"][0]) != section_fingerprint(kept)
 
 
+def test_merged_candidate_sees_a_text_only_section_behind_a_whole_one():
+    """Two bill sections amend one citation and merge into one verdict
+    candidate, built from the first. The first comes back whole, the
+    second text-only with a changed instruction: the candidate's
+    fingerprint has to move all the same."""
+    from axiom_bills._common.reconcile_llm import (
+        candidate_sections, section_fingerprint)
+
+    encoding = {"repo": "rulespec-us", "kind": "statute", "citation": OSHA,
+                "file_path": "statutes/29/655/b.yaml", "github_url": "u"}
+    first = _matched(encoding=encoding, has_rulespec=True)
+    second = _matched(
+        encoding=encoding, has_rulespec=True, applied_ops=[], diff=[],
+        applied_text="within 30 days after publication",
+        unapplied_ops=[dict(REDESIGNATE)])
+    stored = _payload(first, second)
+    changed = {**REDESIGNATE, "redesignate_to": "(c)",
+               "raw": "by redesignating paragraph (1) as subsection (c)"}
+    fresh = _payload(
+        _missed(encoding=encoding, has_rulespec=True),
+        _missed(encoding=encoding, has_rulespec=True,
+                unapplied_ops=[changed]))
+
+    merged, kept = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+    assert kept == 2
+    assert "corpus_diff_dropped" not in merged["sections"][0]
+    assert merged["sections"][1]["corpus_diff_dropped"] is True
+    (before,), (after,) = candidate_sections(stored), candidate_sections(merged)
+    assert section_fingerprint(after) != section_fingerprint(before)
+
+
 def test_other_sections_keep_the_fingerprint_they_had():
     """The full identity is scoped to text-only sections, so no stored
     verdict is invalidated for anything else."""

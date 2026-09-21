@@ -615,6 +615,11 @@ def candidate_sections(diffs: dict | None) -> list[dict]:
             merged[citation] = base
             order.append(citation)
             continue
+        if section.get("corpus_diff_dropped"):
+            # A candidate that carries a text-only section's ops needs
+            # the full op identity too (see section_fingerprint), even
+            # when the first section came back whole.
+            base["corpus_diff_dropped"] = True
         for op in applied:
             moved = dict(op)
             moved.setdefault(

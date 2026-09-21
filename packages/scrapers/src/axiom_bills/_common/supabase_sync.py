@@ -1102,8 +1102,10 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
     CI runs start from an empty SQLite, so verdicts from earlier runs
     live only in Supabase — without hydration the ``reconcile``
     fingerprint skip never fires and the same sections get re-analyzed
-    hourly. Run after ``precompute-diffs`` and before ``reconcile``:
-    every candidate section's fingerprint is recomputed from the fresh
+    hourly. Run after ``hydrate-diffs`` and before ``reconcile``: the
+    fingerprints have to come from the hydrated diffs, or every section
+    ``hydrate-diffs`` keeps would miss its stored verdict.
+    Every candidate section's fingerprint is recomputed from the fresh
     local diffs (the exact skip key ``reconcile`` uses), and any remote
     row whose fingerprint still matches is copied down so the LLM is
     only called for genuinely new or changed sections.
