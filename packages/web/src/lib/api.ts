@@ -174,15 +174,18 @@ export type BillDiffSection = {
   source_url: string | null;
   // Set when the live corpus no longer answered for this section and the
   // refresh kept what an earlier run had matched. The text is from
-  // `corpus_text_as_of`, not from today's corpus. When
-  // `corpus_text_as_of_exact` is false that date is only a bound: the
-  // text comes from a refresh that started on or before it.
+  // `corpus_text_as_of`, not from today's corpus. That is when the text
+  // was fetched from the corpus when `corpus_text_as_of_exact` is true.
+  // When it is false the date is only a bound: the text comes from a
+  // refresh that started on or before it.
   corpus_stale?: boolean;
   corpus_text_as_of?: string | null;
   corpus_text_as_of_exact?: boolean;
   // The bill's instructions parse differently now than when the text was
   // kept, so the stored diff was dropped and no operation is applied.
   corpus_diff_dropped?: boolean;
+  // When `current_text` was fetched from the corpus.
+  corpus_fetched_at?: string | null;
 };
 
 export type BillDiffs = { sections: BillDiffSection[] };

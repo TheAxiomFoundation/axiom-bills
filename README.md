@@ -176,10 +176,11 @@ a section the fresh run matched.
   operations are today's, none applied, there is no diff, and the
   section is marked `corpus_diff_dropped`.
 
-`corpus_text_as_of` is the stored payload's `computed_at`. Payloads
-written before that field existed fall back to the row's
-`last_scraped_at`, which is only a bound, and `corpus_text_as_of_exact`
-is then false. `sync-supabase` applies the same merge as a backstop, so
+`corpus_text_as_of` is the stored section's `corpus_fetched_at`: when
+its text came from the corpus, which a local cache can make earlier than
+the run. Sections written before that field existed fall back to the
+row's `last_scraped_at`, which is only a bound, and
+`corpus_text_as_of_exact` is then false. `sync-supabase` applies the same merge as a backstop, so
 a run that skips `hydrate-diffs` still cannot overwrite matched text
 with a miss. The web app labels these sections.
 

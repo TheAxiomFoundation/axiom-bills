@@ -7,13 +7,15 @@ describe("corpusStaleNote", () => {
     expect(corpusStaleNote({ corpus_stale: false })).toBeNull();
   });
 
-  it("gives the exact date when the payload recorded its computation", () => {
+  it("gives the exact date when the section recorded its corpus fetch", () => {
     const note = corpusStaleNote({
       corpus_stale: true,
       corpus_text_as_of: "2026-07-02T13:58:48+00:00",
       corpus_text_as_of_exact: true,
     });
-    expect(note).toContain("text and diff below come from a refresh on 2026-07-02.");
+    expect(note).toContain(
+      "text and diff below come from the corpus as it was on 2026-07-02.",
+    );
     expect(note).toContain("did not serve this section at the last refresh");
   });
 
@@ -25,7 +27,7 @@ describe("corpusStaleNote", () => {
         corpus_text_as_of_exact: exact,
       });
       expect(note).toContain("a refresh that started on or before 2026-07-02.");
-      expect(note).not.toContain("a refresh on 2026-07-02");
+      expect(note).not.toContain("as it was on");
     }
   });
 

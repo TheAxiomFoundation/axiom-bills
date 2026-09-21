@@ -61,6 +61,9 @@ def _op_dict(op) -> dict:
         "payload": getattr(op, "payload", ""),
         "anchor": getattr(op, "anchor", ""),
         "redesignate_to": getattr(op, "redesignate_to", ""),
+        # Parsed, and the applier acts on it: "at the end" takes the last
+        # occurrence of the needle, never the first.
+        "at_end": bool(getattr(op, "at_end", False)),
         "scope_source": getattr(op, "scope_source", ""),
         "raw":    getattr(op, "raw", ""),
     }
@@ -226,8 +229,8 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     return {
         "sections": sections,
         "source_text_sha256": text_sha,
-        # When this payload was computed. hydrate-diffs dates a section it
-        # keeps from an earlier payload with it.
+        # When this payload was computed. Not when its corpus text was
+        # fetched: each section carries that as corpus_fetched_at.
         "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "statutory_effective_from": (
             statutory_date.isoformat() if statutory_date else None
@@ -266,6 +269,9 @@ def _section_payload(target: str, encoding: dict | None, prov, *,
         "encoding_backlog": encoding_backlog,
         "axiom_url": f"{AXIOM_APP_URL}/{prov.citation_path}",
         "source_url": prov.source_url,
+        # When current_text came from the corpus. A local cache hit keeps
+        # the original fetch time, so this never claims a later check.
+        "corpus_fetched_at": getattr(prov, "fetched_at", None),
     }
 
 

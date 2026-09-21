@@ -38,18 +38,23 @@ _ENCODING_FIELDS = ("encoding", "has_rulespec", "encoding_backlog")
 _CORPUS_FIELDS = (
     "in_corpus", "exact_corpus_match", "sliced_subsection",
     "matched_corpus_path", "heading", "citation_path", "current_text",
-    "source_url",
+    "source_url", "corpus_fetched_at",
 )
 
 # What the parser reads out of an instruction. ``scope_source`` and
 # ``note`` are by-products of applying it, so they are not compared.
+# ``at_end`` was first parsed on 2026-08-25 and payloads written before
+# this module existed do not carry it. A missing value compares as false,
+# which is how those ops were applied, so a stored diff whose op now
+# parses as "at the end" does not come back.
 _OP_PARSE_FIELDS = (
-    "kind", "target", "needle", "payload", "anchor", "redesignate_to", "raw",
+    "kind", "target", "needle", "payload", "anchor", "redesignate_to",
+    "at_end", "raw",
 )
 
-NOT_REAPPLIED_NOTE = (
-    "not applied: the corpus did not serve this section at this refresh"
-)
+# Shown beside each operation of a text-only section. The web prefixes
+# an unapplied op's note with "Not applied:".
+NOT_REAPPLIED_NOTE = "the corpus did not serve this section at this refresh"
 
 
 def touch_flags(sections: list[dict]) -> tuple[bool, bool, bool]:
@@ -105,10 +110,10 @@ def _same_instruction(fresh: dict, stored: dict, *, same_bill_text: bool) -> boo
     none on either side, only an unchanged bill text shows the two
     sections are the same one.
     """
-    fresh_keys = _op_keys(fresh)
-    if fresh_keys != _op_keys(stored):
+    if _op_keys(fresh) != _op_keys(stored):
         return False
-    return same_bill_text or any(key[-1] for key in fresh_keys)
+    has_raw = any((op.get("raw") or "").strip() for op in _all_ops(fresh))
+    return same_bill_text or has_raw
 
 
 def _text_only(fresh: dict, stored: dict) -> dict:
@@ -155,9 +160,11 @@ def preserve_stored_sections(
     the whole stored section comes back. Otherwise only its corpus facts
     do, under the fresh operations, marked ``corpus_diff_dropped``.
 
-    ``corpus_text_as_of`` is the stored payload's ``computed_at`` when it
-    has one, and ``corpus_text_as_of_exact`` is then true. Payloads
-    written before ``computed_at`` existed fall back to ``stored_as_of``,
+    ``corpus_text_as_of`` is the stored section's ``corpus_fetched_at``
+    when it has one, and ``corpus_text_as_of_exact`` is then true. That
+    is when the text came from the corpus, which a local cache can make
+    earlier than the run that computed the payload. Sections written
+    before ``corpus_fetched_at`` existed fall back to ``stored_as_of``,
     the remote row's ``last_scraped_at``. The scrape stamps that column
     before the run computes its diffs, and a run that computes no diffs
     moves it without touching the payload, so it only says the text comes from a
@@ -210,8 +217,8 @@ def preserve_stored_sections(
             kept["corpus_text_as_of"] = source["corpus_text_as_of"]
             kept["corpus_text_as_of_exact"] = bool(
                 source.get("corpus_text_as_of_exact"))
-        elif stored.get("computed_at"):
-            kept["corpus_text_as_of"] = stored["computed_at"]
+        elif source.get("corpus_fetched_at"):
+            kept["corpus_text_as_of"] = source["corpus_fetched_at"]
             kept["corpus_text_as_of_exact"] = True
         else:
             kept["corpus_text_as_of"] = stored_as_of

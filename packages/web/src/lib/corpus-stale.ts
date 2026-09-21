@@ -13,9 +13,10 @@ type StaleFields = Pick<
  * earlier refresh because the live corpus no longer answers for it.
  * Null for every other section.
  *
- * Newer payloads record when they were computed, and that date is exact.
- * Older ones only carry the time the refresh stamped on the bill's row,
- * which says the text comes from a refresh that started on or before it.
+ * Newer sections record when their text came from the corpus, and that
+ * date is exact. Older ones only carry the time the refresh stamped on the
+ * bill's row, which says the text comes from a refresh that started on or
+ * before it.
  */
 export function corpusStaleNote(section: StaleFields): string | null {
   if (!section.corpus_stale) return null;
@@ -24,7 +25,7 @@ export function corpusStaleNote(section: StaleFields): string | null {
   const when = !dated
     ? " an earlier refresh"
     : section.corpus_text_as_of_exact
-      ? ` a refresh on ${asOf}`
+      ? ` the corpus as it was on ${asOf}`
       : ` a refresh that started on or before ${asOf}`;
   const what = section.corpus_diff_dropped
     ? "The current-law text below comes from"

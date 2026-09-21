@@ -326,18 +326,46 @@ def test_section_without_a_citation_is_left_alone():
     assert merged == fresh
 
 
-def test_computed_at_dates_the_kept_text_exactly():
-    stored = {**_payload(_matched()), "computed_at": "2026-07-02T13:58:48+00:00"}
+def test_corpus_fetch_time_dates_the_kept_text_exactly():
+    """Not the payload's computed_at: a local cache hit can make the text
+    older than the run that computed the payload."""
+    stored = {**_payload(_matched(
+        corpus_fetched_at="2026-07-02T13:58:48+00:00")),
+        "computed_at": "2026-09-01T00:00:00+00:00"}
+
+    for fresh in (_payload(_missed()),
+                  _payload(_missed(unapplied_ops=[dict(NEW_OP)]))):
+        merged, _ = preserve_stored_sections(
+            fresh, stored, stored_as_of="2026-09-15T00:00:00+00:00")
+
+        section = merged["sections"][0]
+        assert section["corpus_text_as_of"] == "2026-07-02T13:58:48+00:00"
+        assert section["corpus_text_as_of_exact"] is True
+        assert section["corpus_fetched_at"] == "2026-07-02T13:58:48+00:00"
+
+
+def test_an_op_that_now_parses_at_the_end_drops_a_legacy_diff():
+    """Payloads from before `at_end` was parsed applied every op to the
+    first occurrence. The applier now takes the last one for such an op,
+    so the stored diff no longer answers it."""
+    fresh = _payload(_missed(unapplied_ops=[{**OP, "at_end": True}]))
+    stored = _payload(_matched())          # legacy: no at_end key at all
+
+    merged, _ = preserve_stored_sections(fresh, stored, stored_as_of="x")
+
+    assert merged["sections"][0]["corpus_diff_dropped"] is True
+
+
+def test_a_legacy_op_matches_one_that_does_not_parse_at_the_end():
+    fresh = _payload(_missed(unapplied_ops=[{**OP, "at_end": False}]))
 
     merged, _ = preserve_stored_sections(
-        _payload(_missed()), stored, stored_as_of="2026-08-15T00:00:00+00:00")
+        fresh, _payload(_matched()), stored_as_of="x")
 
-    section = merged["sections"][0]
-    assert section["corpus_text_as_of"] == "2026-07-02T13:58:48+00:00"
-    assert section["corpus_text_as_of_exact"] is True
+    assert "corpus_diff_dropped" not in merged["sections"][0]
 
 
-def test_without_computed_at_the_row_stamp_is_only_a_bound():
+def test_without_a_fetch_time_the_row_stamp_is_only_a_bound():
     merged, _ = preserve_stored_sections(
         _payload(_missed()), _payload(_matched()),
         stored_as_of="2026-08-15T00:00:00+00:00")
