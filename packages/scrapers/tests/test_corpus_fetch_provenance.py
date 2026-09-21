@@ -65,6 +65,51 @@ def test_cache_hit_keeps_the_original_fetch_time(tmp_path, monkeypatch):
     assert prov.fetched_at == "2026-07-02T13:58:48+00:00"
 
 
+def test_ancestor_cache_hit_keeps_its_own_fetch_time(tmp_path, monkeypatch):
+    db_path = _db(tmp_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO corpus_provisions (citation_path, citation, jurisdiction,"
+        " doc_type, heading, body, effective_date, source_url, has_rulespec,"
+        " fetched_at) VALUES ('us/statute/29/655', '29 USC 655', 'us',"
+        " 'statute', 'Standards', 'within 30 days', NULL, 'u', 0,"
+        " '2026-07-02 13:58:48')")
+    conn.commit()
+    conn.close()
+    asked: list[str] = []
+
+    def miss(path):
+        asked.append(path)
+        return None
+
+    monkeypatch.setattr(corpus_client, "_fetch_supabase", miss)
+    monkeypatch.setattr(corpus_client, "_MISS_CACHE", set())
+
+    prov = fetch("29 USC 655(b)", db_path=db_path)
+
+    assert asked == ["us/statute/29/655/b"]
+    assert prov.is_exact_match is False
+    assert prov.fetched_at == "2026-07-02T13:58:48+00:00"
+
+
+def test_returned_and_cached_fetch_times_are_the_same(tmp_path, monkeypatch):
+    """One clock: the object handed back and the cache row agree, so the
+    same text never gets two dates."""
+    db_path = _db(tmp_path)
+    monkeypatch.setattr(corpus_client, "_fetch_supabase",
+                        lambda path: _provision(citation_path=path))
+    monkeypatch.setattr(corpus_client, "_MISS_CACHE", set())
+
+    live = fetch("29 USC 655", db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT fetched_at FROM corpus_provisions").fetchone()
+    conn.close()
+    cached = fetch("29 USC 655", db_path=db_path)
+
+    assert row[0] == live.fetched_at
+    assert cached.fetched_at == live.fetched_at
+
+
 def test_live_fetch_is_stamped_now(tmp_path, monkeypatch):
     db_path = _db(tmp_path)
     monkeypatch.setattr(corpus_client, "_fetch_supabase",

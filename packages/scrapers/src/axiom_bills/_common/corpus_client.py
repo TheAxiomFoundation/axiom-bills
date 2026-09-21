@@ -269,6 +269,9 @@ def fetch(citation: str, *, force: bool = False,
             continue
         fresh.citation = citation
         fresh.is_exact_match = is_exact
+        # One clock for the returned object and the cache row: stamping
+        # the row with SQLite's datetime('now') could land on the other
+        # side of midnight and give the same text two dates.
         fresh.fetched_at = datetime.now(timezone.utc).isoformat(
             timespec="seconds")
         with connect(db_path) as conn:
@@ -277,7 +280,7 @@ def fetch(citation: str, *, force: bool = False,
                 INSERT OR REPLACE INTO corpus_provisions
                   (citation_path, citation, jurisdiction, doc_type, heading,
                    body, effective_date, source_url, has_rulespec, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fresh.citation_path,
@@ -289,6 +292,7 @@ def fetch(citation: str, *, force: bool = False,
                     fresh.effective_date,
                     fresh.source_url,
                     1 if fresh.has_rulespec else 0,
+                    fresh.fetched_at,
                 ),
             )
         return fresh

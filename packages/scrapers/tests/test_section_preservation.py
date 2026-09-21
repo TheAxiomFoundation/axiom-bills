@@ -356,6 +356,22 @@ def test_an_op_that_now_parses_at_the_end_drops_a_legacy_diff():
     assert merged["sections"][0]["corpus_diff_dropped"] is True
 
 
+def test_at_end_is_compared_in_both_directions():
+    stored_true = _payload(_matched(applied_ops=[{**OP, "at_end": True}]))
+    stored_false = _payload(_matched(applied_ops=[{**OP, "at_end": False}]))
+    fresh_false = _payload(_missed(unapplied_ops=[{**OP, "at_end": False}]))
+    fresh_true = _payload(_missed(unapplied_ops=[{**OP, "at_end": True}]))
+
+    def dropped(fresh, stored):
+        merged, _ = preserve_stored_sections(fresh, stored, stored_as_of="x")
+        return bool(merged["sections"][0].get("corpus_diff_dropped"))
+
+    assert dropped(fresh_false, stored_true) is True
+    assert dropped(fresh_true, stored_false) is True
+    assert dropped(fresh_false, stored_false) is False
+    assert dropped(fresh_true, stored_true) is False
+
+
 def test_a_legacy_op_matches_one_that_does_not_parse_at_the_end():
     fresh = _payload(_missed(unapplied_ops=[{**OP, "at_end": False}]))
 
@@ -363,6 +379,26 @@ def test_a_legacy_op_matches_one_that_does_not_parse_at_the_end():
         fresh, _payload(_matched()), stored_as_of="x")
 
     assert "corpus_diff_dropped" not in merged["sections"][0]
+
+
+def test_an_earlier_stale_date_beats_a_fetch_time_and_keeps_its_exactness():
+    """A kept section's own date is the oldest thing known about its
+    text. Nothing later may replace it, and an inexact one stays inexact."""
+    for exact in (False, True):
+        already_stale = _matched(
+            corpus_stale=True, axiom_url=None,
+            corpus_text_as_of="2026-07-02T13:58:48+00:00",
+            corpus_text_as_of_exact=exact,
+            corpus_fetched_at="2026-08-30T00:00:00+00:00")
+        for fresh in (_payload(_missed()),
+                      _payload(_missed(unapplied_ops=[dict(NEW_OP)]))):
+            merged, _ = preserve_stored_sections(
+                fresh, _payload(already_stale),
+                stored_as_of="2026-09-20T00:00:00+00:00")
+
+            section = merged["sections"][0]
+            assert section["corpus_text_as_of"] == "2026-07-02T13:58:48+00:00"
+            assert section["corpus_text_as_of_exact"] is exact
 
 
 def test_without_a_fetch_time_the_row_stamp_is_only_a_bound():
@@ -707,3 +743,69 @@ def test_stored_diffs_fetch_is_chunked_and_skips_null_diffs(monkeypatch):
     assert len(calls) == 3                      # 45 unique ids, 20 per request
     assert all(c["select"] == "id,diffs,last_scraped_at" for c in calls)
     assert "b00" not in stored and len(stored) == 44
+
+
+
+# ------------------------------------------- reconciliation of kept sections
+
+
+REDESIGNATE = {"kind": "redesignate", "target": OSHA, "needle": "",
+               "payload": "", "anchor": "", "redesignate_to": "(b)",
+               "raw": "by redesignating paragraph (1) as subsection (b)"}
+
+
+def test_text_only_section_does_not_keep_a_verdict_for_a_changed_instruction():
+    """On a plain miss the before/after text is lost, so the verdict
+    fingerprint moves and the section is analysed again. Text-only keeps
+    that text, so the fingerprint has to see the op fields itself: here
+    only `redesignate_to` and `raw` change."""
+    from axiom_bills._common.reconcile_llm import section_fingerprint
+
+    stored_section = _matched(
+        applied_ops=[], diff=[], applied_text="within 30 days after publication",
+        unapplied_ops=[{**REDESIGNATE, "note": "redesignate not applied"}])
+    changed = {**REDESIGNATE, "redesignate_to": "(c)",
+               "raw": "by redesignating paragraph (1) as subsection (c)"}
+    fresh = _payload(_missed(unapplied_ops=[changed]))
+
+    merged, _ = preserve_stored_sections(
+        fresh, _payload(stored_section), stored_as_of="x")
+    kept = merged["sections"][0]
+
+    assert kept["corpus_diff_dropped"] is True
+    assert kept["current_text"] == stored_section["current_text"]
+    assert section_fingerprint(kept) != section_fingerprint(stored_section)
+
+    third = {**changed, "raw": "by redesignating paragraph (1) as (c)"}
+    again, _ = preserve_stored_sections(
+        _payload(_missed(unapplied_ops=[third])), merged, stored_as_of="x")
+    assert section_fingerprint(again["sections"][0]) != section_fingerprint(kept)
+
+
+def test_other_sections_keep_the_fingerprint_they_had():
+    """The full identity is scoped to text-only sections, so no stored
+    verdict is invalidated for anything else."""
+    from axiom_bills._common.reconcile_llm import section_fingerprint
+
+    plain = _matched()
+    with_extras = _matched(applied_ops=[{**OP, "anchor": "a", "at_end": True,
+                                         "raw": "different"}])
+
+    assert section_fingerprint(plain) == section_fingerprint(with_extras)
+
+    merged, _ = preserve_stored_sections(
+        _payload(_missed()), _payload(plain), stored_as_of="x")
+    assert section_fingerprint(merged["sections"][0]) == section_fingerprint(plain)
+
+
+def test_reconciliation_prompt_renders_the_text_only_note():
+    from axiom_bills._common.reconcile_llm import _ops_block
+
+    merged, _ = preserve_stored_sections(
+        _payload(_missed(unapplied_ops=[dict(NEW_OP)])),
+        _payload(_matched()), stored_as_of="x")
+
+    assert _ops_block(merged["sections"][0]) == (
+        "[could not be auto-applied: the corpus did not serve this section "
+        "at this refresh] " + NEW_OP["raw"])
+

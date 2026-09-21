@@ -52,8 +52,9 @@ _OP_PARSE_FIELDS = (
     "at_end", "raw",
 )
 
-# Shown beside each operation of a text-only section. The web prefixes
-# an unapplied op's note with "Not applied:".
+# The ``note`` on each operation of a text-only section. It is read after
+# a lead-in, so it carries none of its own: the reconciliation prompt
+# renders an unapplied op as "[could not be auto-applied: <note>] <raw>".
 NOT_REAPPLIED_NOTE = "the corpus did not serve this section at this refresh"
 
 
