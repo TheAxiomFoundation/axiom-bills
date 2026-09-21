@@ -6,6 +6,7 @@ import {
   type BillDiffs as TDiffs,
   type RuleVariant,
 } from "../lib/api";
+import { corpusStaleNote } from "../lib/corpus-stale";
 import { clean, parseScalarNote } from "../lib/variant-text";
 import { sliceRulesBySource } from "../lib/yaml-slice";
 import { BeforeAfter } from "./BeforeAfter";
@@ -220,6 +221,9 @@ function SectionView({ section, variants }: {
     <div className="diff-section">
       <div className="diff-layout">
         <div className="diff-main">
+          {corpusStaleNote(section) && (
+            <p className="hint">{corpusStaleNote(section)}</p>
+          )}
           {section.axiom_url && (
             <p className="diff-section-source">
               <a href={section.axiom_url} target="_blank" rel="noreferrer">

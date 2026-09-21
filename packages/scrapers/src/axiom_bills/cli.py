@@ -772,6 +772,25 @@ def hydrate_reconciliations() -> None:
         click.echo(f"  {k:<14} {v}")
 
 
+@main.command(name="hydrate-diffs")
+def hydrate_diffs() -> None:
+    """Keep stored diff sections the live corpus no longer answers for.
+
+    Run after `precompute-diffs` and before `precompute-variants` when
+    working from a fresh database (CI does this every run): a section
+    whose corpus lookup missed, but which an earlier run had matched to
+    real text for the same amendment instruction, gets the stored section
+    back, marked `corpus_stale`. Without this the following sync would
+    overwrite that text with "no corpus text". Requires SUPABASE_URL and
+    SUPABASE_SERVICE_KEY.
+    """
+    from ._common.supabase_sync import hydrate_stored_sections
+    from ._common.db import DEFAULT_DB
+    counts = hydrate_stored_sections(DEFAULT_DB)
+    for k, v in sorted(counts.items()):
+        click.echo(f"  {k:<18} {v}")
+
+
 @main.command(name="hydrate-variants")
 def hydrate_variants() -> None:
     """Copy still-valid LLM proposals from Supabase into local SQLite.

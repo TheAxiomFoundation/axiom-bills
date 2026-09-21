@@ -170,6 +170,11 @@ export type BillDiffSection = {
   encoding_backlog?: boolean;
   axiom_url: string | null;
   source_url: string | null;
+  // Set when the live corpus no longer answered for this section and the
+  // refresh kept the section an earlier run had matched. The text and
+  // diff date from `corpus_text_as_of` or earlier, not from today's corpus.
+  corpus_stale?: boolean;
+  corpus_text_as_of?: string | null;
 };
 
 export type BillDiffs = { sections: BillDiffSection[] };
