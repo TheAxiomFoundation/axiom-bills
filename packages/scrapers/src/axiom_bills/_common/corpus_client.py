@@ -19,6 +19,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 
@@ -61,6 +62,9 @@ class CorpusProvision:
     # True when this is the exact citation_path the bill targets; False
     # when we fell back to an ancestor (corpus didn't have the subsection).
     is_exact_match: bool = True
+    # When this text came from the corpus (UTC, ISO 8601). For a row read
+    # from the local cache that is the original fetch, not this run.
+    fetched_at: str | None = None
 
 
 # 'us/statute/26/213(a)(1)' is the canonical Axiom citation_path. Our
@@ -123,7 +127,18 @@ def _row_to_provision(row: sqlite3.Row | dict) -> CorpusProvision:
         effective_date=row["effective_date"],
         source_url=row["source_url"],
         has_rulespec=bool(row["has_rulespec"]),
+        fetched_at=_iso_utc(
+            row["fetched_at"] if "fetched_at" in row.keys() else None),
     )
+
+
+def _iso_utc(stamp: str | None) -> str | None:
+    """SQLite's `datetime('now')` ('2026-07-02 13:58:48', UTC) as ISO 8601."""
+    if not stamp:
+        return None
+    if "T" in stamp:
+        return stamp
+    return stamp.replace(" ", "T") + "+00:00"
 
 
 def _cached(citation_path: str, db_path: str = DEFAULT_DB) -> CorpusProvision | None:
@@ -254,13 +269,18 @@ def fetch(citation: str, *, force: bool = False,
             continue
         fresh.citation = citation
         fresh.is_exact_match = is_exact
+        # One clock for the returned object and the cache row: stamping
+        # the row with SQLite's datetime('now') could land on the other
+        # side of midnight and give the same text two dates.
+        fresh.fetched_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds")
         with connect(db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO corpus_provisions
                   (citation_path, citation, jurisdiction, doc_type, heading,
                    body, effective_date, source_url, has_rulespec, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fresh.citation_path,
@@ -272,6 +292,7 @@ def fetch(citation: str, *, force: bool = False,
                     fresh.effective_date,
                     fresh.source_url,
                     1 if fresh.has_rulespec else 0,
+                    fresh.fetched_at,
                 ),
             )
         return fresh

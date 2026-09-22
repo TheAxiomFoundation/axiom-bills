@@ -615,6 +615,11 @@ def candidate_sections(diffs: dict | None) -> list[dict]:
             merged[citation] = base
             order.append(citation)
             continue
+        if section.get("corpus_diff_dropped"):
+            # A candidate that carries a text-only section's ops needs
+            # the full op identity too (see section_fingerprint), even
+            # when the first section came back whole.
+            base["corpus_diff_dropped"] = True
         for op in applied:
             moved = dict(op)
             moved.setdefault(
@@ -636,11 +641,33 @@ def _sha_or_none(text: str | None) -> str | None:
 def section_fingerprint(section: dict) -> str:
     """Stable hash of everything the verdicts depend on (mirrors
     variants._ops_fingerprint): the ops with applied flags, the
-    before/after text shas, and the encoding file path."""
+    before/after text shas, and the encoding file path.
+
+    A section kept text-only by hydrate-diffs (``corpus_diff_dropped``)
+    hashes every parsed op field. Its before/after text is the stored
+    text and nothing is applied, so the text shas cannot move when the
+    instruction does: without the full identity, an op whose `raw` or
+    `redesignate_to` changed would keep the verdict drawn from the old
+    one. Every other section hashes as before, so no stored verdict is
+    invalidated by this.
+    """
+    full_identity = bool(section.get("corpus_diff_dropped"))
+
+    def op_doc(op: dict, applied: bool) -> dict:
+        doc = {"kind": op.get("kind", ""), "target": op.get("target", ""),
+               "needle": op.get("needle", ""), "payload": op.get("payload", ""),
+               "applied": applied}
+        if full_identity:
+            doc.update({
+                "anchor": op.get("anchor") or "",
+                "redesignate_to": op.get("redesignate_to") or "",
+                "at_end": bool(op.get("at_end")),
+                "raw": op.get("raw") or "",
+            })
+        return doc
+
     ops = [
-        {"kind": op.get("kind", ""), "target": op.get("target", ""),
-         "needle": op.get("needle", ""), "payload": op.get("payload", ""),
-         "applied": applied}
+        op_doc(op, applied)
         for op, applied in (
             [(o, True) for o in section.get("applied_ops") or []]
             + [(o, False) for o in section.get("unapplied_ops") or []]

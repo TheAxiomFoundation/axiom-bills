@@ -26,6 +26,12 @@ from typing import Any, Callable, Iterable
 
 import httpx
 
+from .section_preservation import (
+    has_corpus_miss,
+    preserve_stored_sections,
+    touch_flags,
+)
+
 
 # Supabase/PostgREST occasionally times out or returns a transient 5xx on a
 # big write (large bills batches carry the diffs JSONB). Retry those with
@@ -333,6 +339,63 @@ def _remote_child_ids(
     }
 
 
+def _stored_diffs_by_bill(
+    client: httpx.Client, remote_bill_ids: Iterable[str],
+) -> dict[str, dict]:
+    """Remote ``diffs`` (and when they were written) keyed by bill id.
+
+    Small chunks: each row carries the whole diffs JSONB.
+    """
+    stored: dict[str, dict] = {}
+    unique_ids = sorted({bill_id for bill_id in remote_bill_ids if bill_id})
+    for batch in _chunks(unique_ids, 20):
+        for row in _select_all(client, "bills", {
+            "select": "id,diffs,last_scraped_at",
+            "id": f"in.({','.join(batch)})",
+            "order": "id.asc",
+        }):
+            if row.get("diffs"):
+                stored[row["id"]] = row
+    return stored
+
+
+def _preserve_into_rows(client: httpx.Client, bills_rows: list[dict]) -> int:
+    """Write-boundary backstop for ``hydrate-diffs``.
+
+    ``bills_rows`` already carry remote ids. Any row about to overwrite a
+    remote section that had matched corpus text with a corpus miss gets
+    the stored section back (see section_preservation). After
+    ``hydrate-diffs`` it keeps nothing, but it is not free: a bill that
+    still holds a miss the stored payload never matched stays a
+    candidate, so its stored row is read again.
+    """
+    candidates = [r for r in bills_rows if has_corpus_miss(r.get("diffs"))]
+    if not candidates:
+        return 0
+    stored = _stored_diffs_by_bill(client, (r["id"] for r in candidates))
+    preserved = 0
+    for row in candidates:
+        remote = stored.get(row["id"])
+        if remote is None:
+            continue
+        merged, kept = preserve_stored_sections(
+            row["diffs"], remote["diffs"],
+            stored_as_of=remote.get("last_scraped_at"),
+        )
+        if not kept:
+            continue
+        row["diffs"] = merged
+        touches_corpus, touches_rulespec, needs_new = touch_flags(
+            merged["sections"])
+        if "touches_corpus" in row:
+            row["touches_corpus"] = touches_corpus
+            row["touches_rulespec"] = touches_rulespec
+        if "needs_new_encoding" in row:
+            row["needs_new_encoding"] = needs_new
+        preserved += kept
+    return preserved
+
+
 def sync(db_path: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     local = _local(db_path)
@@ -422,6 +485,13 @@ def sync(db_path: str) -> dict[str, int]:
         bill_id_map = _remote_bill_ids(client, bills_rows, known_remote_sessions)
         for row in bills_rows:
             row["id"] = bill_id_map[row["id"]]
+        if include_diffs:
+            # A corpus miss must never overwrite a section an earlier run
+            # matched to real text. hydrate-diffs does this before the
+            # variants are computed; this is the fail-safe for a run that
+            # skipped it.
+            counts["sections_preserved"] = _preserve_into_rows(
+                client, bills_rows)
         # Small chunk: each bill row carries the diffs JSONB, so big batches
         # produce multi-MB request bodies that time out server-side.
         counts["bills"] = _upsert(
@@ -821,6 +891,98 @@ def sync(db_path: str) -> dict[str, int]:
     return counts
 
 
+def hydrate_stored_sections(db_path: str) -> dict[str, int]:
+    """Pull stored diff sections back for sections the corpus missed.
+
+    CI runs start from an empty SQLite, so ``precompute-diffs`` has only
+    the live corpus to go on. When the corpus no longer serves a section
+    (an outage raises instead, so a miss is a real empty answer), the
+    fresh section says "no corpus text" and the next ``sync-supabase`` would
+    overwrite the matched text an earlier run stored. Run this after
+    ``precompute-diffs`` and before ``precompute-variants``, so variants,
+    the encode queue and the touch flags all see the preserved sections.
+    """
+    counts = {"candidates": 0, "bills_hydrated": 0,
+              "sections_preserved": 0, "sections_text_only": 0}
+    local = _local(db_path)
+    try:
+        return _hydrate_stored_sections(local, counts)
+    finally:
+        local.close()
+
+
+def _hydrate_stored_sections(
+    local: sqlite3.Connection, counts: dict[str, int],
+) -> dict[str, int]:
+    try:
+        pending = [
+            dict(r) for r in local.execute("""
+                SELECT id, jurisdiction, session_id, chamber, number, diffs
+                  FROM bills
+                 WHERE diffs IS NOT NULL
+            """)
+        ]
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc) or "no such column" in str(exc):
+            return counts
+        raise
+    for row in pending:
+        row["diffs"] = json.loads(row["diffs"])
+    pending = [r for r in pending if has_corpus_miss(r["diffs"])]
+    counts["candidates"] = len(pending)
+    if not pending:
+        return counts
+
+    has_flags = _has_column(local, "bills", "touches_rulespec")
+    has_backlog = _has_column(local, "bills", "needs_new_encoding")
+    with _client() as client:
+        session_rows = local.execute(
+            "SELECT id, jurisdiction, name FROM sessions"
+        ).fetchall()
+        session_id_map, known_remote_sessions = _remote_session_ids(
+            client, session_rows)
+        bill_id_map = _remote_bill_ids(client, [
+            {**r, "session_id": session_id_map.get(r["session_id"], r["session_id"])}
+            for r in pending
+        ], known_remote_sessions)
+        stored = _stored_diffs_by_bill(
+            client, (bill_id_map[r["id"]] for r in pending))
+
+    for row in pending:
+        remote = stored.get(bill_id_map[row["id"]])
+        if remote is None:
+            continue
+        merged, kept = preserve_stored_sections(
+            row["diffs"], remote["diffs"],
+            stored_as_of=remote.get("last_scraped_at"),
+        )
+        if not kept:
+            continue
+        touches_corpus, touches_rulespec, needs_new = touch_flags(
+            merged["sections"])
+        local.execute(
+            "UPDATE bills SET diffs = ? WHERE id = ?",
+            (json.dumps(merged), row["id"]),
+        )
+        if has_flags:
+            local.execute(
+                "UPDATE bills SET touches_corpus = ?, touches_rulespec = ?"
+                " WHERE id = ?",
+                (int(touches_corpus), int(touches_rulespec), row["id"]),
+            )
+        if has_backlog:
+            local.execute(
+                "UPDATE bills SET needs_new_encoding = ? WHERE id = ?",
+                (int(needs_new), row["id"]),
+            )
+        counts["bills_hydrated"] += 1
+        counts["sections_preserved"] += kept
+        counts["sections_text_only"] += sum(
+            1 for s in merged["sections"] if s.get("corpus_diff_dropped"))
+    local.commit()
+    return counts
+
+
 def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
     """Pull still-valid LLM proposals from Supabase into local SQLite.
 
@@ -940,8 +1102,10 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
     CI runs start from an empty SQLite, so verdicts from earlier runs
     live only in Supabase — without hydration the ``reconcile``
     fingerprint skip never fires and the same sections get re-analyzed
-    hourly. Run after ``precompute-diffs`` and before ``reconcile``:
-    every candidate section's fingerprint is recomputed from the fresh
+    hourly. Run after ``hydrate-diffs`` and before ``reconcile``: the
+    fingerprints have to come from the hydrated diffs, or every section
+    ``hydrate-diffs`` keeps would miss its stored verdict.
+    Every candidate section's fingerprint is recomputed from the fresh
     local diffs (the exact skip key ``reconcile`` uses), and any remote
     row whose fingerprint still matches is copied down so the LLM is
     only called for genuinely new or changed sections.

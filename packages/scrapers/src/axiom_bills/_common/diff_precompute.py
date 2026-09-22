@@ -16,11 +16,13 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from .citation_scope import is_ancestor, op_affects_encoding
 from .corpus_client import fetch as fetch_corpus
 from .effective_date import extract_effective_date
+from .section_preservation import touch_flags
 from .version_rank import stage_rank
 from .amendments import (
     normalize_legal_text,
@@ -59,6 +61,9 @@ def _op_dict(op) -> dict:
         "payload": getattr(op, "payload", ""),
         "anchor": getattr(op, "anchor", ""),
         "redesignate_to": getattr(op, "redesignate_to", ""),
+        # Parsed, and the applier acts on it: "at the end" takes the last
+        # occurrence of the needle, never the first.
+        "at_end": bool(getattr(op, "at_end", False)),
         "scope_source": getattr(op, "scope_source", ""),
         "raw":    getattr(op, "raw", ""),
     }
@@ -224,6 +229,9 @@ def compute_one_bill(conn: sqlite3.Connection, bill_id: str,
     return {
         "sections": sections,
         "source_text_sha256": text_sha,
+        # When this payload was computed. Not when its corpus text was
+        # fetched: each section carries that as corpus_fetched_at.
+        "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "statutory_effective_from": (
             statutory_date.isoformat() if statutory_date else None
         ),
@@ -261,6 +269,9 @@ def _section_payload(target: str, encoding: dict | None, prov, *,
         "encoding_backlog": encoding_backlog,
         "axiom_url": f"{AXIOM_APP_URL}/{prov.citation_path}",
         "source_url": prov.source_url,
+        # When current_text came from the corpus. A local cache hit keeps
+        # the original fetch time, so this never claims a later check.
+        "corpus_fetched_at": getattr(prov, "fetched_at", None),
     }
 
 
@@ -342,25 +353,9 @@ def precompute_all(db_path: str = DEFAULT_DB,
             counts["with_sections"] += 1
         if any(s["applied_ops"] for s in payload["sections"]):
             counts["with_ops"] += 1
-        # Materialized relevance flags — same predicate as the
-        # bill_list_summary view: a match needs >=1 parsed amendment op.
-        # Unapplied ops count: they're real amendment instructions the
-        # applier couldn't verify against corpus text (drift, every
-        # redesignate) — excluding them made such bills silently invisible
-        # to the re-encode trigger.
-        touches_rulespec = any(
-            s["encoding"] and (s["applied_ops"] or s["unapplied_ops"])
-            for s in payload["sections"]
-        )
-        touches_corpus = any(
-            s["in_corpus"] and s.get("citation_path")
-            and (s["applied_ops"] or s["unapplied_ops"])
-            for s in payload["sections"]
-        )
-        # Amends inside an encoded program area but no existing rule file
-        # is affected → new provision → encoder backlog.
-        needs_new_encoding = any(
-            s.get("encoding_backlog") for s in payload["sections"]
+        # Materialized relevance flags; predicate lives in touch_flags.
+        touches_corpus, touches_rulespec, needs_new_encoding = touch_flags(
+            payload["sections"]
         )
         conn.execute(
             "UPDATE bills SET diffs = ?, touches_corpus = ?,"
