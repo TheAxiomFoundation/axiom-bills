@@ -2,7 +2,7 @@
 
 Anon access is granted via the `corpus` schema profile. We expose:
 
-* `citation_to_path('26 USC 213(a)')` → 'us/statute/26/213(a)'
+* `citation_to_path('26 USC 213(a)')` → 'us/statute/26/213/a'
 * `fetch('26 USC 213')` → CorpusProvision dataclass, hits Supabase if not
   already cached locally, caches the result.
 
@@ -95,8 +95,10 @@ def citation_to_path(citation: str) -> str | None:
         '26 USC 213'         → 'us/statute/26/213'
         '26 USC 213(a)'      → 'us/statute/26/213/a'
         '26 USC 213(a)(1)'   → 'us/statute/26/213/a/1'
-        '7 CFR 273.3(b)(2)'  → 'us/regulation/7/273.3/b/2'
+        '7 CFR 273.3(b)(2)'  → 'us/regulation/7/273/3/b/2'
     Earlier versions kept the parens inline, which never matched corpus.
+    The corpus also splits a CFR part and section into two segments: no
+    US regulation row carries a dotted 'part.section' segment.
     """
     m = USC_CITATION_RE.match(citation)
     if m:
@@ -111,7 +113,7 @@ def citation_to_path(citation: str) -> str | None:
         part = m.group("part")
         section = m.group("section")
         subs = re.findall(r"\(([^)]+)\)", m.group("sub") or "")
-        head = f"us/regulation/{title}/{part}.{section}"
+        head = f"us/regulation/{title}/{part}/{section}"
         return head + ("/" + "/".join(subs) if subs else "")
     return None
 
@@ -222,13 +224,18 @@ def _parent_paths(path: str) -> list[str]:
     `us/statute/26/3121/a/1` → ['us/statute/26/3121/a', 'us/statute/26/3121'].
     The corpus often stores text at the section level only; a bill citing
     a deeper sub-element still wants the surrounding section's body.
+
+    The walk stops at the section, never above it. A statute section is
+    the 4th segment (`us/statute/<title>/<section>`); a regulation section
+    is the 5th (`us/regulation/<title>/<part>/<section>`), so a CFR
+    citation never falls back to its whole part.
     """
-    # us/<doc_type>/<title>/<section>[/...sub] — first 4 segments are fixed.
     segments = path.split("/")
-    if len(segments) <= 4:
+    floor = 5 if len(segments) > 1 and segments[1] == "regulation" else 4
+    if len(segments) <= floor:
         return []
     out: list[str] = []
-    for i in range(len(segments) - 1, 3, -1):
+    for i in range(len(segments) - 1, floor - 1, -1):
         out.append("/".join(segments[:i]))
     return out
 
