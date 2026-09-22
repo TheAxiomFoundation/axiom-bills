@@ -121,19 +121,23 @@ def _effective_from_for_bill(row: sqlite3.Row,
         return date.today()
 
 
-def _ops_fingerprint(ops: list[tuple[Op, bool]],
+def _ops_fingerprint(ops: list[tuple[Op, str, bool]],
                      baseline_yaml: str | None) -> str:
     """Stable hash of everything the variant's output depends on.
 
-    `ops` pairs each op with its applied flag — an op moving between
-    applied and unapplied (corpus drift) changes what the variant means,
-    so it must invalidate.
+    `ops` carries each op with the verbatim bill text it was parsed from
+    and its applied flag. The reencoder reads the four parsed fields;
+    the LLM proposal prompt reads the verbatim text (variants_llm), so
+    a parse that reads the same fields out of different text still has
+    to invalidate. An op moving between applied and unapplied (corpus
+    drift) changes what the variant means, so it must invalidate too.
     """
     doc = {
         "ops": [
             {"kind": o.kind, "target": o.target,
-             "needle": o.needle, "payload": o.payload, "applied": applied}
-            for o, applied in ops
+             "needle": o.needle, "payload": o.payload,
+             "raw": raw, "applied": applied}
+            for o, raw, applied in ops
         ],
         "baseline_sha256": (
             hashlib.sha256(baseline_yaml.encode()).hexdigest()
@@ -171,8 +175,8 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
     # are tracked too: they can't be auto-patched, but silently dropping
     # them meant a bill could amend an encoded rule with no variant and
     # no flag at all.
-    applied_by_enc: dict[str, list[Op]] = {}
-    unapplied_by_enc: dict[str, list[Op]] = {}
+    applied_by_enc: dict[str, list[tuple[Op, str]]] = {}
+    unapplied_by_enc: dict[str, list[tuple[Op, str]]] = {}
     encoding_by_id: dict[str, sqlite3.Row] = {}
     for section in payload.get("sections", []):
         section_ops = (
@@ -194,20 +198,22 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
                     continue
                 encoding_by_id[enc["id"]] = enc
                 bucket = applied_by_enc if was_applied else unapplied_by_enc
-                bucket.setdefault(enc["id"], []).append(Op(
+                bucket.setdefault(enc["id"], []).append((Op(
                     kind=op_kind,
                     target=op_target,
                     needle=raw_op.get("needle", ""),
                     payload=raw_op.get("payload", ""),
-                ))
+                ), raw_op.get("raw") or ""))
 
     for encoding_id in encoding_by_id:
         enc = encoding_by_id[encoding_id]
-        applied_ops = applied_by_enc.get(encoding_id, [])
-        unapplied_ops = unapplied_by_enc.get(encoding_id, [])
+        applied_with_raw = applied_by_enc.get(encoding_id, [])
+        unapplied_with_raw = unapplied_by_enc.get(encoding_id, [])
+        applied_ops = [o for o, _ in applied_with_raw]
+        unapplied_ops = [o for o, _ in unapplied_with_raw]
         fingerprint_ops = (
-            [(o, True) for o in applied_ops]
-            + [(o, False) for o in unapplied_ops]
+            [(o, raw, True) for o, raw in applied_with_raw]
+            + [(o, raw, False) for o, raw in unapplied_with_raw]
         )
         file_path = enc["file_path"]
         repo = enc["repo"]

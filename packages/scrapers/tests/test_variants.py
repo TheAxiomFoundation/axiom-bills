@@ -318,3 +318,19 @@ def test_missing_baseline_records_no_op(conn, monkeypatch, tmp_path):
     v = _variant(conn)
     assert v["tier"] == "no_op"
     assert "not on disk" in v["note"]
+
+
+def test_changed_verbatim_instruction_invalidates_variant(conn):
+    """The LLM proposal prompt reads each op's verbatim bill text, so a
+    parse that reads the same fields out of different text is a
+    different input even though the reencoder cannot tell."""
+    compute_for_bill(conn, "b1")
+    fp1 = _variant(conn)["source_ops_fingerprint"]
+    payload = json.loads(conn.execute(
+        "SELECT diffs FROM bills WHERE id='b1'").fetchone()["diffs"])
+    for op in payload["sections"][0]["applied_ops"]:
+        op["raw"] = (op.get("raw") or "") + " (as amended by section 3)"
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    assert _variant(conn)["source_ops_fingerprint"] != fp1
