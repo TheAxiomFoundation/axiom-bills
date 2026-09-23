@@ -814,16 +814,19 @@ def test_merged_candidate_sees_a_text_only_section_behind_a_whole_one():
     assert section_fingerprint(after) != section_fingerprint(before)
 
 
-def test_other_sections_keep_the_fingerprint_they_had():
-    """The full identity is scoped to text-only sections, so no stored
-    verdict is invalidated for anything else."""
+def test_every_section_hashes_the_full_op_identity():
+    """Even a matched section: the rule is unconditional, because a
+    section the corpus never served applies nothing, so its op fields
+    (and the heading the prompt reads) are all that can move."""
     from axiom_bills._common.reconcile_llm import section_fingerprint
 
     plain = _matched()
-    with_extras = _matched(applied_ops=[{**OP, "anchor": "a", "at_end": True,
-                                         "raw": "different"}])
-
-    assert section_fingerprint(plain) == section_fingerprint(with_extras)
+    for changed in ({"anchor": "a"}, {"at_end": True}, {"raw": "different"},
+                    {"redesignate_to": "(c)"}, {"note": "needle not found"}):
+        other = _matched(applied_ops=[{**OP, **changed}])
+        assert section_fingerprint(plain) != section_fingerprint(other), changed
+    assert section_fingerprint(plain) != section_fingerprint(
+        _matched(heading="Other heading"))
 
     merged, _ = preserve_stored_sections(
         _payload(_missed()), _payload(plain), stored_as_of="x")

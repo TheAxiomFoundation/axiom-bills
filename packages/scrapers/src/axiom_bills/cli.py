@@ -799,8 +799,10 @@ def hydrate_variants() -> None:
     when working from a fresh database (CI does this every run): any
     remote proposal whose source fingerprint still matches the local
     variant is reused instead of re-calling the LLM, and the following
-    sync won't overwrite it with NULL. Requires SUPABASE_URL and
-    SUPABASE_SERVICE_KEY.
+    sync won't overwrite it with NULL. A remote proposal whose inputs
+    changed is stamped superseded; one whose fingerprint differs only
+    because the fingerprint's definition changed is left for redrafting
+    without the stamp. Requires SUPABASE_URL and SUPABASE_SERVICE_KEY.
     """
     from ._common.supabase_sync import hydrate_llm_proposals
     from ._common.db import DEFAULT_DB

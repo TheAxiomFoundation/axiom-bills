@@ -993,13 +993,23 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
     is copied down, so the LLM is only called for genuinely new or
     changed variants — and the following ``sync-supabase`` pushes the
     hydrated values back instead of overwriting them with NULL.
+
+    A remote proposal whose inputs changed is not copied, and the local
+    row is stamped superseded so the encode queue sees it. A remote
+    fingerprint from an older scheme is compared under its own
+    definition (variants.inputs_changed): if only the definition moved,
+    the row is left for redrafting with no stamp.
     """
-    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
+    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0,
+              "older_scheme": 0}
     local = _local(db_path)
     try:
-        pending = [dict(r) for r in local.execute("""
+        legacy_col = (", v.legacy_ops_fingerprint"
+                      if _has_column(local, "rule_variants",
+                                     "legacy_ops_fingerprint") else "")
+        pending = [dict(r) for r in local.execute(f"""
             SELECT v.id, v.bill_id, v.file_path, v.source_ops_fingerprint,
-                   b.jurisdiction, b.session_id, b.chamber, b.number
+                   b.jurisdiction, b.session_id, b.chamber, b.number{legacy_col}
               FROM rule_variants v
               JOIN bills b ON b.id = v.bill_id
              WHERE v.patched_yaml IS NULL
@@ -1047,7 +1057,11 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if r["proposed_by"] == "llm" and r["patched_yaml"]
         }
 
-        from .variants import SUPERSEDED_MARKER
+        from .variants import (
+            SUPERSEDED_MARKER,
+            fingerprint_is_current_scheme,
+            inputs_changed,
+        )
 
         for row in pending:
             remote = remote_by_key.get(
@@ -1055,7 +1069,20 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             )
             if remote is None:
                 continue
-            if remote["source_ops_fingerprint"] != row["source_ops_fingerprint"]:
+            remote_fp = remote["source_ops_fingerprint"]
+            local_fp = row["source_ops_fingerprint"]
+            if remote_fp != local_fp and not (
+                fingerprint_is_current_scheme(local_fp)
+                and inputs_changed(remote_fp, local_fp,
+                                   row.get("legacy_ops_fingerprint"))
+            ):
+                # Only the fingerprint's definition moved (or this local
+                # database predates the current scheme, so the two cannot
+                # be compared). Leave the row for propose-llm-variants and
+                # raise no stale signal.
+                counts["older_scheme"] += 1
+                continue
+            if remote_fp != local_fp:
                 # A prior LLM proposal exists remotely but the bill's
                 # inputs changed. Stamp the local row so the encode
                 # queue's stale_variant scan can see the supersede on a

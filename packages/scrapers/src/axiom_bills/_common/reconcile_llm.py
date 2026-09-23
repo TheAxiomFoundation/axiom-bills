@@ -615,11 +615,6 @@ def candidate_sections(diffs: dict | None) -> list[dict]:
             merged[citation] = base
             order.append(citation)
             continue
-        if section.get("corpus_diff_dropped"):
-            # A candidate that carries a text-only section's ops needs
-            # the full op identity too (see section_fingerprint), even
-            # when the first section came back whole.
-            base["corpus_diff_dropped"] = True
         for op in applied:
             moved = dict(op)
             moved.setdefault(
@@ -640,31 +635,36 @@ def _sha_or_none(text: str | None) -> str | None:
 
 def section_fingerprint(section: dict) -> str:
     """Stable hash of everything the verdicts depend on (mirrors
-    variants._ops_fingerprint): the ops with applied flags, the
-    before/after text shas, and the encoding file path.
+    variants._ops_fingerprint): every parsed field of every op with its
+    applied flag, the before/after text shas, and the encoding file path.
 
-    A section kept text-only by hydrate-diffs (``corpus_diff_dropped``)
-    hashes every parsed op field. Its before/after text is the stored
-    text and nothing is applied, so the text shas cannot move when the
-    instruction does: without the full identity, an op whose `raw` or
-    `redesignate_to` changed would keep the verdict drawn from the old
-    one. Every other section hashes as before, so no stored verdict is
-    invalidated by this.
+    The analyst prompts read each op's verbatim text (`raw`) and its
+    `note`, and the section's `heading`; the applier acts on `anchor`
+    and `at_end`. When a section has corpus text, a changed op usually
+    moves the after-text sha too, but a section the corpus does not
+    serve, or one hydrate-diffs kept text-only, applies nothing, so the
+    op fields are the only thing that can move. Hashing them all means a
+    parse that reads the same text differently never reuses a verdict
+    drawn from the old reading.
+
+    Not hashed: what the model-analyst prompt reads about the encoding.
+    Only `encoding.file_path` is; the encoded rules and atoms, and the
+    bill variant's tier, note, proposer and patched YAML are not, so a
+    re-encoding of the same path or a later LLM draft reuses the verdict
+    (axiom-bills#103).
     """
-    full_identity = bool(section.get("corpus_diff_dropped"))
 
     def op_doc(op: dict, applied: bool) -> dict:
-        doc = {"kind": op.get("kind", ""), "target": op.get("target", ""),
-               "needle": op.get("needle", ""), "payload": op.get("payload", ""),
-               "applied": applied}
-        if full_identity:
-            doc.update({
-                "anchor": op.get("anchor") or "",
-                "redesignate_to": op.get("redesignate_to") or "",
-                "at_end": bool(op.get("at_end")),
-                "raw": op.get("raw") or "",
-            })
-        return doc
+        return {
+            "kind": op.get("kind", ""), "target": op.get("target", ""),
+            "needle": op.get("needle", ""), "payload": op.get("payload", ""),
+            "anchor": op.get("anchor") or "",
+            "redesignate_to": op.get("redesignate_to") or "",
+            "at_end": bool(op.get("at_end")),
+            "raw": op.get("raw") or "",
+            "note": op.get("note") or "",
+            "applied": applied,
+        }
 
     ops = [
         op_doc(op, applied)
@@ -675,6 +675,7 @@ def section_fingerprint(section: dict) -> str:
     ]
     doc = {
         "ops": ops,
+        "heading": section.get("heading") or "",
         "before_sha256": _sha_or_none(section.get("current_text")),
         "after_sha256": _sha_or_none(section.get("applied_text")),
         "encoding_file_path": (section.get("encoding") or {}).get("file_path"),

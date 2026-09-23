@@ -29,6 +29,11 @@ on:
         description: "Optional Congress number for targeted scrapes (bill numbers repeat across Congresses — H.R.7024 exists in the 118th and 119th as unrelated bills)."
         required: false
         type: string
+      llm_variant_limit:
+        description: "Most LLM variant proposals to draft this run. Only bills scraped this run are redrafted, so raise it only with full_refresh=true or a bills= list, in batches that finish inside the timeout."
+        required: false
+        default: 20
+        type: number
 
 concurrency:
   group: refresh-federal-bills
@@ -52,6 +57,7 @@ jobs:
       REQUESTED_CONGRESS: ${{ inputs.congress || '' }}
       FULL_REFRESH: ${{ inputs.full_refresh || 'false' }}
       FETCH_TEXTS: ${{ inputs.fetch_texts || 'true' }}
+      LLM_VARIANT_LIMIT: ${{ inputs.llm_variant_limit || '20' }}
       # rulespec-us became a monorepo; the federal tree (and the root all
       # encoding file_paths are relative to) is its us/ subdirectory.
       RULESPEC_US_ROOT: ${{ github.workspace }}/rulespec-us/us
@@ -203,7 +209,7 @@ jobs:
             uv run --project packages/scrapers axiom-bills trigger-encodes -j us \
               || echo "::warning::trigger-encodes scan failed - queue not refreshed this run."
             if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-              uv run --project packages/scrapers axiom-bills propose-llm-variants --jurisdiction us --limit 20
+              uv run --project packages/scrapers axiom-bills propose-llm-variants --jurisdiction us --limit "$LLM_VARIANT_LIMIT"
               # Reuse reconciliation verdicts already in Supabase whose
               # section fingerprints are unchanged — the fresh SQLite
               # would otherwise re-analyze the same sections hourly.

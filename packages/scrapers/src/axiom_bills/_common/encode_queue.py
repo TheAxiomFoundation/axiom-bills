@@ -8,9 +8,10 @@ needs encoder attention:
   their amendments land inside an encoded program area with no existing
   rule file (``encoding_backlog`` sections in ``bills.diffs``);
 - **stale_variant** — rule_variants whose LLM proposal was superseded by
-  a fingerprint change (precompute-variants cleared the patched_yaml and
+  a change in its inputs (precompute-variants cleared the patched_yaml and
   appended a "Superseded" note), so the affected encoding should be
-  re-checked at the source;
+  re-checked at the source. A change in the fingerprint's definition
+  alone is not stamped (variants.inputs_changed);
 - **enacted_touch** — enacted/signed bills that amend encoded files: the
   baseline encoding itself is now stale, not just a proposed variant.
 
@@ -125,10 +126,11 @@ def _candidates_stale_variants(
     conn: sqlite3.Connection, jurisdiction: str | None,
 ) -> list[tuple[str, str, str]]:
     """(bill_id, citation, reason) for variants whose LLM proposal was
-    superseded by a fingerprint change (precompute-variants clears the
+    superseded by a change in its inputs (precompute-variants clears the
     patched_yaml and appends a superseded note; on a fresh CI database
     hydrate-variants stamps the same marker when a remote proposal's
-    fingerprint no longer matches)."""
+    inputs changed). A change in the fingerprint's definition alone is
+    not stamped (variants.inputs_changed), so it never lands here."""
     where = ["v.note LIKE ?"]
     params: list = [f"%{SUPERSEDED_MARKER}%"]
     if jurisdiction:
