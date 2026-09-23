@@ -994,7 +994,8 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
     changed variants — and the following ``sync-supabase`` pushes the
     hydrated values back instead of overwriting them with NULL.
     """
-    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0}
+    counts = {"candidates": 0, "hydrated": 0, "stale_remote": 0,
+              "older_scheme": 0}
     local = _local(db_path)
     try:
         pending = [dict(r) for r in local.execute("""
@@ -1047,13 +1048,20 @@ def hydrate_llm_proposals(db_path: str) -> dict[str, int]:
             if r["proposed_by"] == "llm" and r["patched_yaml"]
         }
 
-        from .variants import SUPERSEDED_MARKER
+        from .variants import SUPERSEDED_MARKER, fingerprint_is_current_scheme
 
         for row in pending:
             remote = remote_by_key.get(
                 (bill_id_map[row["bill_id"]], row["file_path"])
             )
             if remote is None:
+                continue
+            if not fingerprint_is_current_scheme(
+                    remote["source_ops_fingerprint"]):
+                # Written under an older fingerprint definition: it cannot
+                # show whether the bill changed. Leave the row for
+                # propose-llm-variants and raise no stale signal.
+                counts["older_scheme"] += 1
                 continue
             if remote["source_ops_fingerprint"] != row["source_ops_fingerprint"]:
                 # A prior LLM proposal exists remotely but the bill's

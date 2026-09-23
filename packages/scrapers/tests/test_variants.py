@@ -334,3 +334,80 @@ def test_changed_verbatim_instruction_invalidates_variant(conn):
                  (json.dumps(payload),))
     compute_for_bill(conn, "b1")
     assert _variant(conn)["source_ops_fingerprint"] != fp1
+
+
+def test_changed_unapplied_verbatim_instruction_invalidates_variant(conn):
+    """Same rule on the unapplied branch."""
+    compute_for_bill(conn, "b1")
+    payload = json.loads(conn.execute(
+        "SELECT diffs FROM bills WHERE id='b1'").fetchone()["diffs"])
+    sec = payload["sections"][0]
+    sec["unapplied_ops"] = sec.pop("applied_ops")
+    sec["applied_ops"] = []
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    fp_unapplied = _variant(conn)["source_ops_fingerprint"]
+    for op in sec["unapplied_ops"]:
+        op["raw"] = (op.get("raw") or "") + " (as amended)"
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    assert _variant(conn)["source_ops_fingerprint"] != fp_unapplied
+
+
+def test_changed_block_raw_invalidates_variant(conn):
+    """The proposal prompt prepends the section's raw amendment block."""
+    compute_for_bill(conn, "b1")
+    fp1 = _variant(conn)["source_ops_fingerprint"]
+    payload = json.loads(conn.execute(
+        "SELECT diffs FROM bills WHERE id='b1'").fetchone()["diffs"])
+    payload["sections"][0]["block_raw"] = "SEC. 2. AMENDMENT. Section 32 is amended..."
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    fp2 = _variant(conn)["source_ops_fingerprint"]
+    assert fp2 != fp1
+    payload["sections"][0]["block_raw"] = "SEC. 2. AMENDMENT. Section 32 is amended, as follows..."
+    conn.execute("UPDATE bills SET diffs=? WHERE id='b1'",
+                 (json.dumps(payload),))
+    compute_for_bill(conn, "b1")
+    assert _variant(conn)["source_ops_fingerprint"] != fp2
+
+
+def test_fingerprint_carries_the_scheme(conn):
+    from axiom_bills._common.variants import FINGERPRINT_SCHEME
+    compute_for_bill(conn, "b1")
+    assert _variant(conn)["source_ops_fingerprint"].startswith(
+        f"{FINGERPRINT_SCHEME}:")
+
+
+def test_older_scheme_fingerprint_is_redrafted_without_a_superseded_note(conn):
+    """A fingerprint from before the scheme change cannot show the bill
+    changed: the LLM proposal is cleared for redrafting, but the row is
+    not marked superseded."""
+    compute_for_bill(conn, "b1")
+    conn.execute(
+        "UPDATE rule_variants SET source_ops_fingerprint = ?,"
+        " proposed_by = 'llm', proposed_model = 'claude',"
+        " patched_yaml = 'x: 1'",
+        ("0" * 64,),
+    )
+    compute_for_bill(conn, "b1")
+    v = _variant(conn)
+    assert v["proposed_by"] != "llm"          # the LLM draft was replaced
+    assert v["source_ops_fingerprint"].startswith("v2:")
+    assert "Superseded" not in (v["note"] or "")
+
+
+def test_current_scheme_change_still_marks_superseded(conn):
+    compute_for_bill(conn, "b1")
+    conn.execute(
+        "UPDATE rule_variants SET source_ops_fingerprint = 'v2:' || ?,"
+        " proposed_by = 'llm', proposed_model = 'claude',"
+        " patched_yaml = 'x: 1'",
+        ("0" * 64,),
+    )
+    compute_for_bill(conn, "b1")
+    assert "Superseded" in (_variant(conn)["note"] or "")
+

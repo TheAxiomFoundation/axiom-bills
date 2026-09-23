@@ -638,13 +638,18 @@ def section_fingerprint(section: dict) -> str:
     variants._ops_fingerprint): every parsed field of every op with its
     applied flag, the before/after text shas, and the encoding file path.
 
-    The analyst prompt reads each op's verbatim text (`raw`), and the
-    applier acts on `anchor` and `at_end`. When a section has corpus
-    text, a changed op usually moves the after-text sha too, but a
-    section the corpus does not serve, or one hydrate-diffs kept
-    text-only, applies nothing, so the op fields are the only thing that
-    can move. Hashing them all means a parse that reads the same text
-    differently never reuses a verdict drawn from the old reading.
+    The analyst prompts read each op's verbatim text (`raw`) and its
+    `note`, and the section's `heading`; the applier acts on `anchor`
+    and `at_end`. When a section has corpus text, a changed op usually
+    moves the after-text sha too, but a section the corpus does not
+    serve, or one hydrate-diffs kept text-only, applies nothing, so the
+    op fields are the only thing that can move. Hashing them all means a
+    parse that reads the same text differently never reuses a verdict
+    drawn from the old reading.
+
+    Not hashed: the encoded rules and atoms the model-analyst prompt is
+    fed. Only `encoding.file_path` is; a re-encoding of the same path
+    reuses the verdict (axiom-bills#103).
     """
 
     def op_doc(op: dict, applied: bool) -> dict:
@@ -655,6 +660,7 @@ def section_fingerprint(section: dict) -> str:
             "redesignate_to": op.get("redesignate_to") or "",
             "at_end": bool(op.get("at_end")),
             "raw": op.get("raw") or "",
+            "note": op.get("note") or "",
             "applied": applied,
         }
 
@@ -667,6 +673,7 @@ def section_fingerprint(section: dict) -> str:
     ]
     doc = {
         "ops": ops,
+        "heading": section.get("heading") or "",
         "before_sha256": _sha_or_none(section.get("current_text")),
         "after_sha256": _sha_or_none(section.get("applied_text")),
         "encoding_file_path": (section.get("encoding") or {}).get("file_path"),

@@ -35,6 +35,17 @@ from .reencoder import Atom, Op, Tier, _classify_op, reencode_rule_file
 # constant, never a bare string.
 SUPERSEDED_MARKER = "Superseded"
 
+# Prefix of every fingerprint _ops_fingerprint writes. Bump it when the
+# fingerprint's definition changes: a stored fingerprint from an older
+# scheme then says nothing about whether the bill changed, so the row is
+# re-proposed without being marked superseded (no false stale signal to
+# the encode queue, no "bill amendments changed" note).
+FINGERPRINT_SCHEME = "v2"
+
+
+def fingerprint_is_current_scheme(fingerprint: str | None) -> bool:
+    return bool(fingerprint) and fingerprint.startswith(f"{FINGERPRINT_SCHEME}:")
+
 
 def _needs_review_tier(ops: list[Op]) -> Tier:
     """Tier for a variant driven by unapplied instructions.
@@ -122,7 +133,8 @@ def _effective_from_for_bill(row: sqlite3.Row,
 
 
 def _ops_fingerprint(ops: list[tuple[Op, str, bool]],
-                     baseline_yaml: str | None) -> str:
+                     baseline_yaml: str | None,
+                     block_raws: tuple[str, ...] = ()) -> str:
     """Stable hash of everything the variant's output depends on.
 
     `ops` carries each op with the verbatim bill text it was parsed from
@@ -131,6 +143,12 @@ def _ops_fingerprint(ops: list[tuple[Op, str, bool]],
     a parse that reads the same fields out of different text still has
     to invalidate. An op moving between applied and unapplied (corpus
     drift) changes what the variant means, so it must invalidate too.
+    `block_raws` are the contributing sections' raw amendment blocks
+    (`block_raw`, kept when the parse had warnings); the proposal prompt
+    prepends them, so they are hashed as well.
+
+    Not hashed: `effective_from`. It falls back to the bill's status
+    date (see `_upsert_variant`), which moves with every action.
     """
     doc = {
         "ops": [
@@ -139,14 +157,21 @@ def _ops_fingerprint(ops: list[tuple[Op, str, bool]],
              "raw": raw, "applied": applied}
             for o, raw, applied in ops
         ],
+        "block_raw_sha256": (
+            hashlib.sha256(
+                "\n---\n".join(sorted(set(block_raws))).encode()
+            ).hexdigest()
+            if block_raws else None
+        ),
         "baseline_sha256": (
             hashlib.sha256(baseline_yaml.encode()).hexdigest()
             if baseline_yaml is not None else None
         ),
     }
-    return hashlib.sha256(
+    digest = hashlib.sha256(
         json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    return f"{FINGERPRINT_SCHEME}:{digest}"
 
 
 def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
@@ -177,6 +202,7 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
     # no flag at all.
     applied_by_enc: dict[str, list[tuple[Op, str]]] = {}
     unapplied_by_enc: dict[str, list[tuple[Op, str]]] = {}
+    block_raw_by_enc: dict[str, set[str]] = {}
     encoding_by_id: dict[str, sqlite3.Row] = {}
     for section in payload.get("sections", []):
         section_ops = (
@@ -204,6 +230,9 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
                     needle=raw_op.get("needle", ""),
                     payload=raw_op.get("payload", ""),
                 ), raw_op.get("raw") or ""))
+                if section.get("block_raw"):
+                    block_raw_by_enc.setdefault(enc["id"], set()).add(
+                        section["block_raw"])
 
     for encoding_id in encoding_by_id:
         enc = encoding_by_id[encoding_id]
@@ -215,6 +244,7 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
             [(o, raw, True) for o, raw in applied_with_raw]
             + [(o, raw, False) for o, raw in unapplied_with_raw]
         )
+        block_raws = tuple(sorted(block_raw_by_enc.get(encoding_id, ())))
         file_path = enc["file_path"]
         repo = enc["repo"]
         repo_root = (Path(os.environ.get(
@@ -233,14 +263,16 @@ def compute_for_bill(conn: sqlite3.Connection, bill_id: str) -> dict[str, int]:
                 diff_summary=None,
                 note=f"Baseline YAML not on disk at {baseline_path}",
                 effective_from=eff_from,
-                ops_fingerprint=_ops_fingerprint(fingerprint_ops, None),
+                ops_fingerprint=_ops_fingerprint(
+                    fingerprint_ops, None, block_raws),
                 text_sha256=text_sha,
                 proposed_by=None,
             )
             counts["unchanged" if outcome == "unchanged" else "no_op"] += 1
             continue
         baseline_yaml = baseline_path.read_text()
-        fingerprint = _ops_fingerprint(fingerprint_ops, baseline_yaml)
+        fingerprint = _ops_fingerprint(
+            fingerprint_ops, baseline_yaml, block_raws)
 
         if applied_ops:
             atoms = _load_atoms(conn, encoding_id)
@@ -339,7 +371,11 @@ def _upsert_variant(conn: sqlite3.Connection, bill_id: str, encoding_id: str,
     if row:
         if row["source_ops_fingerprint"] == ops_fingerprint:
             return "unchanged"
-        superseded_llm = row["proposed_by"] == "llm"
+        # A fingerprint from an older scheme cannot show the bill
+        # changed; re-propose without claiming it did.
+        superseded_llm = (row["proposed_by"] == "llm"
+                          and fingerprint_is_current_scheme(
+                              row["source_ops_fingerprint"]))
         if superseded_llm:
             stale = (f"{SUPERSEDED_MARKER} {row['proposed_model'] or 'LLM'} "
                      "proposal: bill amendments or baseline changed since "
