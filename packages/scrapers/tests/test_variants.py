@@ -19,7 +19,7 @@ from textwrap import dedent
 
 import pytest
 
-from axiom_bills._common.variants import compute_for_bill
+from axiom_bills._common.variants import FINGERPRINT_SCHEME, compute_for_bill
 
 
 MIGRATIONS = Path(__file__).resolve().parents[3] / "db" / "migrations"
@@ -32,6 +32,7 @@ SCHEMA_MIGRATIONS = [
     "007_rule_variants.sql",
     "008_rule_variant_provenance.sql",
     "056_variant_source_tracking.sql",
+    "062_variant_legacy_fingerprint.sql",
 ]
 
 BASELINE_YAML = dedent("""\
@@ -376,38 +377,86 @@ def test_changed_block_raw_invalidates_variant(conn):
 
 
 def test_fingerprint_carries_the_scheme(conn):
-    from axiom_bills._common.variants import FINGERPRINT_SCHEME
     compute_for_bill(conn, "b1")
     assert _variant(conn)["source_ops_fingerprint"].startswith(
         f"{FINGERPRINT_SCHEME}:")
 
 
-def test_older_scheme_fingerprint_is_redrafted_without_a_superseded_note(conn):
-    """A fingerprint from before the scheme change cannot show the bill
-    changed: the LLM proposal is cleared for redrafting, but the row is
-    not marked superseded."""
-    compute_for_bill(conn, "b1")
+def _store_llm_draft(conn, fingerprint: str) -> None:
     conn.execute(
         "UPDATE rule_variants SET source_ops_fingerprint = ?,"
         " proposed_by = 'llm', proposed_model = 'claude',"
         " patched_yaml = 'x: 1'",
-        ("0" * 64,),
+        (fingerprint,),
     )
+
+
+def test_definition_change_alone_is_redrafted_without_a_superseded_note(conn):
+    """A draft stored under the pre-scheme definition, for inputs that have
+    not changed: its stored fingerprint equals today's inputs under that
+    definition. It is redrafted, but not marked superseded."""
+    compute_for_bill(conn, "b1")
+    legacy = _variant(conn)["legacy_ops_fingerprint"]
+    assert legacy and not legacy.startswith(f"{FINGERPRINT_SCHEME}:")
+    _store_llm_draft(conn, legacy)
     compute_for_bill(conn, "b1")
     v = _variant(conn)
     assert v["proposed_by"] != "llm"          # the LLM draft was replaced
-    assert v["source_ops_fingerprint"].startswith("v2:")
+    assert v["source_ops_fingerprint"].startswith(f"{FINGERPRINT_SCHEME}:")
     assert "Superseded" not in (v["note"] or "")
+
+
+def test_older_scheme_draft_for_changed_inputs_is_marked_superseded(conn):
+    """A pre-scheme draft whose inputs did change is still a real change,
+    so the stale signal survives the scheme change."""
+    compute_for_bill(conn, "b1")
+    _store_llm_draft(conn, "0" * 64)
+    compute_for_bill(conn, "b1")
+    assert "Superseded" in (_variant(conn)["note"] or "")
 
 
 def test_current_scheme_change_still_marks_superseded(conn):
     compute_for_bill(conn, "b1")
-    conn.execute(
-        "UPDATE rule_variants SET source_ops_fingerprint = 'v2:' || ?,"
-        " proposed_by = 'llm', proposed_model = 'claude',"
-        " patched_yaml = 'x: 1'",
-        ("0" * 64,),
-    )
+    _store_llm_draft(conn, f"{FINGERPRINT_SCHEME}:" + "0" * 64)
     compute_for_bill(conn, "b1")
     assert "Superseded" in (_variant(conn)["note"] or "")
+
+
+def test_inputs_changed_rule():
+    from axiom_bills._common.variants import inputs_changed
+    cur = f"{FINGERPRINT_SCHEME}:" + "a" * 64
+    assert inputs_changed(cur, cur, "l" * 64) is False
+    assert inputs_changed(f"{FINGERPRINT_SCHEME}:" + "b" * 64, cur, None) is True
+    assert inputs_changed("l" * 64, cur, "l" * 64) is False      # definition only
+    assert inputs_changed("m" * 64, cur, "l" * 64) is True       # real change
+    assert inputs_changed("m" * 64, cur, None) is False          # cannot tell
+    assert inputs_changed(None, cur, "l" * 64) is False          # pre-056 row
+
+
+def test_fingerprint_definition_is_pinned():
+    """If this fails, the fingerprint's definition changed: bump
+    FINGERPRINT_SCHEME (so stored drafts are redrafted without false
+    'Superseded' flags) and update the literal."""
+    from axiom_bills._common.reencoder import Op
+    from axiom_bills._common.variants import _ops_fingerprint
+    op = Op(kind="strike-insert", target="26 USC 32(a)", needle="$600",
+            payload="$750")
+    assert _ops_fingerprint(
+        [(op, "by striking $600", True)], "format: rulespec/v1\n",
+        ("SEC. 2. AMENDMENT.",),
+    ) == ("v2:198677f134eca4a4d4741c767ee71a7ba53b901103719296d4090473ef652367")
+
+
+def test_legacy_fingerprint_matches_the_pre_scheme_definition():
+    """Values computed by the definition at cbf7408, before the scheme
+    existed; stored drafts from then carry exactly these."""
+    from axiom_bills._common.reencoder import Op
+    from axiom_bills._common.variants import _legacy_ops_fingerprint
+    op = Op(kind="strike-insert", target="26 USC 32(a)", needle="$600",
+            payload="$750")
+    ops = [(op, "any raw text", True)]
+    assert _legacy_ops_fingerprint(ops, "format: rulespec/v1\n") == (
+        "9f37cea446b8846d349e374f2b4afef43f37005274e19199740d074b2c0dc474")
+    assert _legacy_ops_fingerprint(ops, None) == (
+        "0d2e8b81316dc128cb1540238f2d23aef978e843e8b1c629baaf7bd1973accbd")
 

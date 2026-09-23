@@ -30,10 +30,10 @@ on:
         required: false
         type: string
       llm_variant_limit:
-        description: "How many LLM variant proposals to draft this run. Raise it once after a fingerprint scheme change, so every stored proposal is redrafted in one run."
+        description: "Most LLM variant proposals to draft this run. Only bills scraped this run are redrafted, so raise it only with full_refresh=true or a bills= list, in batches that finish inside the timeout."
         required: false
-        default: "20"
-        type: string
+        default: 20
+        type: number
 
 concurrency:
   group: refresh-federal-bills

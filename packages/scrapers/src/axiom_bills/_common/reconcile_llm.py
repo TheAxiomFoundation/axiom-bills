@@ -647,9 +647,11 @@ def section_fingerprint(section: dict) -> str:
     parse that reads the same text differently never reuses a verdict
     drawn from the old reading.
 
-    Not hashed: the encoded rules and atoms the model-analyst prompt is
-    fed. Only `encoding.file_path` is; a re-encoding of the same path
-    reuses the verdict (axiom-bills#103).
+    Not hashed: what the model-analyst prompt reads about the encoding.
+    Only `encoding.file_path` is; the encoded rules and atoms, and the
+    bill variant's tier, note, proposer and patched YAML are not, so a
+    re-encoding of the same path or a later LLM draft reuses the verdict
+    (axiom-bills#103).
     """
 
     def op_doc(op: dict, applied: bool) -> dict:
