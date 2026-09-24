@@ -14,12 +14,14 @@ finished diff data without any API service.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -311,6 +313,50 @@ def _remote_bill_ids(client: httpx.Client, rows: list[dict],
     return _map_bill_ids(rows, remote_rows, known_remote_sessions or set())
 
 
+def _action_key(row: dict) -> tuple[str, str, str]:
+    """Match the existing date/text event semantics, using the REMOTE bill id."""
+    occurred = datetime.fromisoformat(row["occurred_at"].replace("Z", "+00:00"))
+    if occurred.tzinfo is None:
+        occurred = occurred.replace(tzinfo=timezone.utc)
+    return (row["bill_id"], occurred.astimezone(timezone.utc).isoformat(), row["action_text"])
+
+
+def _prepare_remote_actions(client: httpx.Client, rows: list[dict]) -> list[dict]:
+    """Preserve a legacy event when present; make new events stable across fresh DBs.
+
+    Existing duplicates are intentionally not deleted. Each logical event updates
+    one deterministic survivor, retaining its id and fingerprint. New events use
+    the mapped remote bill identity, never a random local bill/action id.
+    """
+    if not rows:
+        return []
+    remote = _remote_rows_by_in(
+        client, "bill_actions", select="id,bill_id,occurred_at,action_text,fingerprint",
+        column="bill_id", values=(r["bill_id"] for r in rows),
+    )
+    existing = {}
+    for row in remote:
+        key = _action_key(row)
+        if key not in existing or row["id"] < existing[key]["id"]:
+            existing[key] = row
+    prepared = {}
+    for row in rows:
+        key = _action_key(row)
+        current = existing.get(key)
+        identity = json.dumps(key, ensure_ascii=False, separators=(",", ":"))
+        updated = dict(row)
+        if current:
+            updated.update(id=current["id"], fingerprint=current["fingerprint"])
+        else:
+            updated.update(
+                id=str(uuid.uuid5(uuid.NAMESPACE_URL, "axiom-bills:action:v2:" + identity)),
+                fingerprint=hashlib.sha256(identity.encode()).hexdigest(),
+            )
+        # PostgREST cannot update the same conflict target twice in one INSERT.
+        prepared[key] = updated
+    return list(prepared.values())
+
+
 def _remote_child_ids(
     client: httpx.Client,
     table: str,
@@ -518,15 +564,7 @@ def sync(db_path: str) -> dict[str, int]:
                 "fingerprint": r["fingerprint"],
                 "ingested_at": r["ingested_at"],
             })
-        child_id_map = _remote_child_ids(
-            client,
-            "bill_actions",
-            rows=rows,
-            select="fingerprint",
-            key_columns=("fingerprint",),
-        )
-        for row in rows:
-            row["id"] = child_id_map[row["id"]]
+        rows = _prepare_remote_actions(client, rows)
         counts["bill_actions"] = _upsert(
             client, "bill_actions", rows, on_conflict="bill_id,fingerprint"
         )
