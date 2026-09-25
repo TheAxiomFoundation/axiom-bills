@@ -6,6 +6,11 @@ import {
   type BillDiffs as TDiffs,
   type RuleVariant,
 } from "../lib/api";
+import {
+  diffTabStatus,
+  opsSummary,
+  unappliedListPromise,
+} from "../lib/diff-status";
 import { clean, parseScalarNote } from "../lib/variant-text";
 import { sliceRulesBySource } from "../lib/yaml-slice";
 import { BeforeAfter } from "./BeforeAfter";
@@ -119,19 +124,8 @@ export function BillDiffs({ billId }: { billId: string }) {
           >
             <span className="diff-tab-cite">{s.citation}</span>
             {s.heading && <span className="diff-tab-heading">{s.heading}</span>}
-            <span className={`diff-tab-status diff-tab-status--${
-              s.applied_ops.length > 0 ? "applied"
-                : s.unapplied_ops.length > 0 ? "unapplied"
-                : !s.in_corpus ? "noop"
-                : "noop"
-            }`}>
-              {s.applied_ops.length > 0
-                ? `${s.applied_ops.length} edit${s.applied_ops.length === 1 ? "" : "s"}`
-                : s.unapplied_ops.length > 0
-                ? "unparsed"
-                : !s.in_corpus
-                ? "no corpus text"
-                : "no diff detected"}
+            <span className={`diff-tab-status diff-tab-status--${diffTabStatus(s).tone}`}>
+              {diffTabStatus(s).label}
             </span>
           </button>
         ))}
@@ -236,13 +230,22 @@ function SectionView({ section, variants }: {
             <DiffView blocks={section.diff} />
           ) : section.in_corpus ? (
             <div className="diff-fallback">
-              {section.exact_corpus_match && (
+              {/* An unapplied instruction is always explained, whether or
+                  not corpus had the exact row: the inexact case is where
+                  scoping most often fails. */}
+              {section.unapplied_ops.length > 0 ? (
                 <p className="hint">
-                  {section.unapplied_ops.length > 0
-                    ? "We detected amendment language but couldn’t auto-apply it. The current law text is shown below; raw instructions are in the drawer."
-                    : "No amendment language detected for this section in the bill text. The current law text is shown for context."}
+                  We parsed this bill’s amendment instructions for this
+                  section but couldn’t apply them to the current law text,
+                  so no diff is shown. {unappliedListPromise(section)} The
+                  bill text remains the source of truth.
                 </p>
-              )}
+              ) : section.exact_corpus_match ? (
+                <p className="hint">
+                  No amendment language detected for this section in the
+                  bill text. The current law text is shown for context.
+                </p>
+              ) : null}
               <pre className="diff-current">{section.current_text}</pre>
             </div>
           ) : (
@@ -257,12 +260,13 @@ function SectionView({ section, variants }: {
           )}
 
           {(section.applied_ops.length > 0 || section.unapplied_ops.length > 0) && (
-            <details className="diff-ops">
+            // Open by default when something was not applied: the page
+            // promises those instructions are visible, not one click away.
+            <details className="diff-ops" open={section.unapplied_ops.length > 0}>
               <summary>
                 Parsed amendment instructions
                 <span className="diff-ops-count">
-                  ({section.applied_ops.length} applied,{" "}
-                  {section.unapplied_ops.length} unparsed)
+                  ({opsSummary(section)})
                 </span>
               </summary>
               <ul className="diff-ops-list">
@@ -281,6 +285,9 @@ function SectionView({ section, variants }: {
                   <li key={`u${i}`} className="diff-op diff-op--unapplied">
                     <code className="diff-op-kind">{op.kind}</code>
                     <span className="diff-op-raw">{op.raw.slice(0, 240)}</span>
+                    {op.note && (
+                      <span className="diff-op-note">Not applied: {op.note}</span>
+                    )}
                   </li>
                 ))}
               </ul>

@@ -1188,6 +1188,16 @@ table.bills td a:hover { color: var(--color-accent); }
   color: var(--color-ink-secondary);
   font-style: italic;
 }
+/* Why an instruction was not applied. Own row, so the reason is not
+   read as part of the quoted bill text beside it: .diff-op is a wrapping
+   flex row, where only a full flex-basis forces the break. Citations in
+   a reason can be long and unbroken. */
+.diff-op-note {
+  flex: 0 0 100%;
+  margin-top: 4px;
+  color: var(--color-ink-secondary);
+  overflow-wrap: anywhere;
+}
 
 /* ───────── affected rules (Pipeline B trigger) ───────── */
 .affected-rules { margin-top: 32px; }
