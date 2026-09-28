@@ -144,6 +144,9 @@ export type AmendmentOp = {
   needle: string;
   payload: string;
   raw: string;
+  // Present on unapplied ops: why the applier declined (scope not
+  // located, needle not found, ambiguous match, …).
+  note?: string;
 };
 
 export type BillDiffSection = {
