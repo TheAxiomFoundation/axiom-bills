@@ -112,6 +112,7 @@ export SUPABASE_URL=https://<project>.supabase.co
 export SUPABASE_SERVICE_KEY=eyJ...           # service_role
 cd packages/scrapers
 .venv/bin/python -m axiom_bills.cli precompute-diffs   # fills bills.diffs
+.venv/bin/python -m axiom_bills.cli hydrate-diffs      # keeps stored sections the corpus missed
 .venv/bin/python -m axiom_bills.cli sync-supabase      # uploads to PG
 
 # 4. Frontend env:
@@ -150,6 +151,7 @@ list/structural changes get an LLM-drafted proposal
 index-encodings --repo ~/rulespec-us   # rulespec inventory → axiom_encodings
 precompute-graph --repo ~/rulespec-us  # rulespec dependency graph → encoding_graphs
 fetch-texts / precompute-diffs         # bill text → parsed ops (bills.diffs)
+hydrate-diffs                          # keep stored sections the corpus no longer serves
 trigger-encodes -j us                  # staleness signals → encode_queue (enqueue-only)
 precompute-variants                    # ops × encodings → rule_variants
 hydrate-variants                       # reuse prior LLM proposals from Supabase
@@ -159,6 +161,28 @@ reconcile -j us                        # agentic bill↔encoding verdicts → bi
 sync-supabase                          # push everything up
 export-variants --out ./patches        # patched YAML + manifest for downstream
 ```
+
+`precompute-diffs` rebuilds every section from the live corpus, and a
+fresh database (every CI run) has nothing else to go on. When the corpus
+does not serve a section that an earlier run matched, `hydrate-diffs`
+keeps what that run stored and marks it `corpus_stale`. It never touches
+a section the fresh run matched.
+
+- When today's parse reads the same operations as the stored one, the
+  whole stored section comes back, diff included.
+- When the parse changed (the parser moves between runs, so an unchanged
+  bill text does not mean unchanged operations), only the corpus facts
+  come back: the current-law text, heading, path and source. The
+  operations are today's, none applied, there is no diff, and the
+  section is marked `corpus_diff_dropped`.
+
+`corpus_text_as_of` is the stored section's `corpus_fetched_at`: when
+its text came from the corpus, which a local cache can make earlier than
+the run. Sections written before that field existed fall back to the
+row's `last_scraped_at`, which is only a bound, and
+`corpus_text_as_of_exact` is then false. `sync-supabase` applies the same merge as a backstop, so
+a run that skips `hydrate-diffs` still cannot overwrite matched text
+with a miss. The web app labels these sections.
 
 `fetch-texts` prefers HTML > XML > TXT > PDF; PDF text **is** fetched
 (extracted via pypdf — scanned/encrypted PDFs are skipped).

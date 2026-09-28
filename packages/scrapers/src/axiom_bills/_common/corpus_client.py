@@ -2,7 +2,7 @@
 
 Anon access is granted via the `corpus` schema profile. We expose:
 
-* `citation_to_path('26 USC 213(a)')` → 'us/statute/26/213(a)'
+* `citation_to_path('26 USC 213(a)')` → 'us/statute/26/213/a'
 * `fetch('26 USC 213')` → CorpusProvision dataclass, hits Supabase if not
   already cached locally, caches the result.
 
@@ -19,6 +19,7 @@ import re
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 
@@ -61,6 +62,9 @@ class CorpusProvision:
     # True when this is the exact citation_path the bill targets; False
     # when we fell back to an ancestor (corpus didn't have the subsection).
     is_exact_match: bool = True
+    # When this text came from the corpus (UTC, ISO 8601). For a row read
+    # from the local cache that is the original fetch, not this run.
+    fetched_at: str | None = None
 
 
 # 'us/statute/26/213(a)(1)' is the canonical Axiom citation_path. Our
@@ -91,8 +95,10 @@ def citation_to_path(citation: str) -> str | None:
         '26 USC 213'         → 'us/statute/26/213'
         '26 USC 213(a)'      → 'us/statute/26/213/a'
         '26 USC 213(a)(1)'   → 'us/statute/26/213/a/1'
-        '7 CFR 273.3(b)(2)'  → 'us/regulation/7/273.3/b/2'
+        '7 CFR 273.3(b)(2)'  → 'us/regulation/7/273/3/b/2'
     Earlier versions kept the parens inline, which never matched corpus.
+    The corpus also splits a CFR part and section into two segments: no
+    US regulation row carries a dotted 'part.section' segment.
     """
     m = USC_CITATION_RE.match(citation)
     if m:
@@ -107,7 +113,7 @@ def citation_to_path(citation: str) -> str | None:
         part = m.group("part")
         section = m.group("section")
         subs = re.findall(r"\(([^)]+)\)", m.group("sub") or "")
-        head = f"us/regulation/{title}/{part}.{section}"
+        head = f"us/regulation/{title}/{part}/{section}"
         return head + ("/" + "/".join(subs) if subs else "")
     return None
 
@@ -123,7 +129,18 @@ def _row_to_provision(row: sqlite3.Row | dict) -> CorpusProvision:
         effective_date=row["effective_date"],
         source_url=row["source_url"],
         has_rulespec=bool(row["has_rulespec"]),
+        fetched_at=_iso_utc(
+            row["fetched_at"] if "fetched_at" in row.keys() else None),
     )
+
+
+def _iso_utc(stamp: str | None) -> str | None:
+    """SQLite's `datetime('now')` ('2026-07-02 13:58:48', UTC) as ISO 8601."""
+    if not stamp:
+        return None
+    if "T" in stamp:
+        return stamp
+    return stamp.replace(" ", "T") + "+00:00"
 
 
 def _cached(citation_path: str, db_path: str = DEFAULT_DB) -> CorpusProvision | None:
@@ -207,13 +224,18 @@ def _parent_paths(path: str) -> list[str]:
     `us/statute/26/3121/a/1` → ['us/statute/26/3121/a', 'us/statute/26/3121'].
     The corpus often stores text at the section level only; a bill citing
     a deeper sub-element still wants the surrounding section's body.
+
+    The walk stops at the section, never above it. A statute section is
+    the 4th segment (`us/statute/<title>/<section>`); a regulation section
+    is the 5th (`us/regulation/<title>/<part>/<section>`), so a CFR
+    citation never falls back to its whole part.
     """
-    # us/<doc_type>/<title>/<section>[/...sub] — first 4 segments are fixed.
     segments = path.split("/")
-    if len(segments) <= 4:
+    floor = 5 if len(segments) > 1 and segments[1] == "regulation" else 4
+    if len(segments) <= floor:
         return []
     out: list[str] = []
-    for i in range(len(segments) - 1, 3, -1):
+    for i in range(len(segments) - 1, floor - 1, -1):
         out.append("/".join(segments[:i]))
     return out
 
@@ -254,13 +276,18 @@ def fetch(citation: str, *, force: bool = False,
             continue
         fresh.citation = citation
         fresh.is_exact_match = is_exact
+        # One clock for the returned object and the cache row: stamping
+        # the row with SQLite's datetime('now') could land on the other
+        # side of midnight and give the same text two dates.
+        fresh.fetched_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds")
         with connect(db_path) as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO corpus_provisions
                   (citation_path, citation, jurisdiction, doc_type, heading,
                    body, effective_date, source_url, has_rulespec, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     fresh.citation_path,
@@ -272,6 +299,7 @@ def fetch(citation: str, *, force: bool = False,
                     fresh.effective_date,
                     fresh.source_url,
                     1 if fresh.has_rulespec else 0,
+                    fresh.fetched_at,
                 ),
             )
         return fresh

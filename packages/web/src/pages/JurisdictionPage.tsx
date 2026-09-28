@@ -187,11 +187,17 @@ export function JurisdictionPage() {
                       <ul className="encodings-inline">
                         {b.matched_corpus.slice(0, 3).map((c) => (
                           <li key={c.citation_path}>
-                            <a href={c.axiom_url} target="_blank"
-                               rel="noreferrer" title={c.heading || c.citation}
-                               onClick={(ev) => ev.stopPropagation()}>
-                              {c.citation}
-                            </a>
+                            {c.axiom_url ? (
+                              <a href={c.axiom_url} target="_blank"
+                                 rel="noreferrer" title={c.heading || c.citation}
+                                 onClick={(ev) => ev.stopPropagation()}>
+                                {c.citation}
+                              </a>
+                            ) : (
+                              <span title={c.heading || c.citation}>
+                                {c.citation}
+                              </span>
+                            )}
                           </li>
                         ))}
                         {b.matched_corpus.length > 3 && (
