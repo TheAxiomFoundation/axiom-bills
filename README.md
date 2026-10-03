@@ -147,6 +147,11 @@ version reflecting the bill. Scalar substitutions patch automatically;
 list/structural changes get an LLM-drafted proposal
 (`propose-llm-variants`, needs `ANTHROPIC_API_KEY`).
 
+Variant proposals and reconciliation verdicts default to `claude-sonnet-5-5`.
+Set `AXIOM_LLM_MODEL` to override both. Proposals use low effort;
+reconciliation uses medium effort, with a 16,000-token budget per call for
+both paths. Stored proposals and verdicts retain their original provenance.
+
 ```
 index-encodings --repo ~/rulespec-us   # rulespec inventory → axiom_encodings
 precompute-graph --repo ~/rulespec-us  # rulespec dependency graph → encoding_graphs

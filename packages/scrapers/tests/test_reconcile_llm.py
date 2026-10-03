@@ -16,12 +16,16 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from anthropic import Anthropic
 
 from axiom_bills._common.reconcile_llm import (
     _resolve_provision,
     _resolve_rules,
+    _run_analyst,
     candidate_sections,
     reconcile_all,
     reconcile_for_bill,
@@ -156,8 +160,9 @@ class _ToolUse:
 
 
 class _Resp:
-    def __init__(self, blocks: list):
+    def __init__(self, blocks: list, stop_reason: str = "tool_use"):
         self.content = blocks
+        self.stop_reason = stop_reason
 
 
 def _verdict_resp(tool_input: dict) -> _Resp:
@@ -186,7 +191,9 @@ class FakeMessages:
         self.calls: list[dict] = []
 
     def create(self, **kwargs):
-        self.calls.append(kwargs)
+        # Snapshot the conversation at request time; the agent appends
+        # subsequent turns to its original list.
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
         if not self._responses:
             raise AssertionError("unexpected LLM call — no responses queued")
         if self._repeat_last and len(self._responses) == 1:
@@ -331,6 +338,119 @@ def test_dry_run_selects_only_qualifying_bills(db_path):
 # ────────────────────────────────────────────────────────────────────
 #  Verdict validation
 # ────────────────────────────────────────────────────────────────────
+
+def test_sdk_serializes_sonnet_request_and_preserves_thinking(conn):
+    """Exercise the installed SDK without allowing any network traffic."""
+    thinking = {
+        "type": "thinking", "thinking": "", "signature": "test-signature",
+    }
+    lookup = {
+        "type": "tool_use", "id": "lookup1", "name": "lookup_provision",
+        "input": {"citation": "26 USC 32"},
+    }
+    verdict = dict(VALID_VERDICT, ambiguity=None, upstreamQuote=None)
+    replies = [
+        [thinking, lookup],
+        [{"type": "tool_use", "id": "verdict1", "name": "record_verdict",
+          "input": verdict}],
+    ]
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        return httpx.Response(200, json={
+            "id": f"msg{len(requests)}", "type": "message",
+            "role": "assistant", "model": payload["model"],
+            "content": replies.pop(0), "stop_reason": "tool_use",
+            "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 10},
+        })
+
+    with Anthropic(
+        api_key="test-key", max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        result = _run_analyst(
+            client, conn, "b1", system="Analyze the amendment.",
+            user="Compare the credit amounts.", model="claude-sonnet-5-5",
+            max_turns=2,
+        )
+
+    assert result == {key: value for key, value in verdict.items()
+                      if value is not None}
+    assert len(requests) == 2
+    for request in requests:
+        assert request["model"] == "claude-sonnet-5-5"
+        assert request["max_tokens"] == 16000
+        assert request["output_config"] == {"effort": "medium"}
+        assert request["tool_choice"] == {"type": "auto"}
+        assert "MUST call record_verdict" in request["system"][0]["text"]
+        assert not {"temperature", "top_p", "top_k", "thinking"} & request.keys()
+        tool = next(t for t in request["tools"]
+                    if t["name"] == "record_verdict")
+        assert tool["strict"] is True
+        schema = tool["input_schema"]
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+        for field in ("ambiguity", "upstreamQuote", "downstreamQuote"):
+            assert schema["properties"][field]["type"] == ["string", "null"]
+
+    # The last turn offers only the verdict tool, but still uses auto.
+    assert len(requests[0]["tools"]) == 3
+    assert [t["name"] for t in requests[1]["tools"]] == ["record_verdict"]
+    assert "Call record_verdict now" in requests[1]["system"][0]["text"]
+    history = requests[1]["messages"]
+    assert history[:1] == requests[0]["messages"]
+    assert history[1] == {"role": "assistant", "content": [thinking, lookup]}
+    assert history[2]["content"][0]["tool_use_id"] == "lookup1"
+    assert "The credit is $600." in history[2]["content"][0]["content"]
+
+
+def test_missing_final_verdict_retries_after_bounded_research(conn):
+    fake = FakeClient([
+        _Resp([_ToolUse("lookup_provision", {"citation": "26 USC 32"})]),
+        _Resp([SimpleNamespace(type="text", text="Analysis without a verdict.")],
+              stop_reason="end_turn"),
+        _verdict_resp(VALID_VERDICT),
+    ])
+    result = _run_analyst(
+        fake, conn, "b1", system="Analyze.", user="Compare.",
+        model="claude-sonnet-5-5", max_turns=2,
+    )
+    assert result == VALID_VERDICT
+    assert len(fake.calls) == 3
+    assert [t["name"] for t in fake.calls[1]["tools"]] == ["record_verdict"]
+    # One fresh attempt follows the bounded research attempt.
+    assert fake.calls[2]["messages"] == fake.calls[0]["messages"]
+
+
+def test_missing_verdict_retries_once_then_records_failure(conn, capsys):
+    fake = FakeClient([_Resp([], stop_reason="end_turn")], repeat_last=True)
+    counts = reconcile_for_bill(conn, "b1", get_client=lambda: fake)
+    assert counts == {"sections": 1, "analyzed": 0, "skipped": 0, "failed": 1}
+    assert len(fake.calls) == 2
+    assert "FAILED: no valid record_verdict after 2 attempts" in capsys.readouterr().err
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM bill_reconciliations WHERE bill_id='b1'",
+    ).fetchone()["payload"])
+    assert payload["failed"] is True
+    assert "billVsLaw" not in payload and "modelVsLaw" not in payload
+
+
+def test_refusal_is_handled_before_reading_content(conn, capsys):
+    # Deliberately no content attribute: inspecting it on refusal is a bug.
+    fake = FakeClient([SimpleNamespace(stop_reason="refusal")])
+    counts = reconcile_for_bill(conn, "b1", get_client=lambda: fake)
+    assert counts == {"sections": 1, "analyzed": 0, "skipped": 0, "failed": 1}
+    assert len(fake.calls) == 1
+    assert "analyst refused the request" in capsys.readouterr().err
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM bill_reconciliations WHERE bill_id='b1'",
+    ).fetchone()["payload"])
+    assert payload["failed"] is True
+    assert "billVsLaw" not in payload and "modelVsLaw" not in payload
+
 
 def test_valid_verdict_rejects_bad_enums():
     assert valid_verdict(VALID_VERDICT)

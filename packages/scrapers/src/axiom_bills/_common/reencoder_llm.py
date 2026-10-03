@@ -293,7 +293,7 @@ def _trim_atoms_to_versions(rule: dict, n_versions: int) -> None:
 # ────────────────────────────────────────────────────────────────────
 
 
-DEFAULT_MODEL = os.environ.get("AXIOM_LLM_MODEL", "claude-sonnet-4-5")
+DEFAULT_MODEL = os.environ.get("AXIOM_LLM_MODEL", "claude-sonnet-5-5")
 
 
 def propose_via_anthropic(
@@ -319,10 +319,13 @@ def propose_via_anthropic(
     )
     resp = client.messages.create(
         model=used_model,
-        max_tokens=8000,
+        max_tokens=16000,
+        output_config={"effort": "low"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}],
     )
+    if getattr(resp, "stop_reason", None) == "refusal":
+        raise ProposalRejected(f"LLM refused to propose a re-encoding for {citation}")
     if getattr(resp, "stop_reason", None) == "max_tokens":
         # Truncated YAML would just fail validation with a confusing
         # error; surface the real cause. RuntimeError (not
@@ -331,7 +334,7 @@ def propose_via_anthropic(
             f"LLM response truncated at max_tokens for {citation} — "
             "baseline may be too large for one-shot re-encoding."
         )
-    text_blocks = [b.text for b in resp.content if getattr(b, "text", None)]
+    text_blocks = [b.text for b in resp.content if b.type == "text"]
     raw = "\n".join(text_blocks)
     yaml_text = parse_response(raw)
     proposal = validate_proposal(
