@@ -122,8 +122,10 @@ Corpus available to your lookup tools: provisions cached in the local corpus tab
 
 VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "additionalProperties": False,
     "required": ["status", "divergence", "materiality", "action",
-                 "confidence", "rationale"],
+                 "confidence", "rationale", "ambiguity", "upstreamQuote",
+                 "downstreamQuote"],
     "properties": {
         "status": {"type": "string", "enum": list(DIFF_STATUSES)},
         "divergence": {
@@ -139,26 +141,27 @@ VERDICT_SCHEMA: dict[str, Any] = {
             "description": "At most ONE sentence justifying the call.",
         },
         "ambiguity": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "When confidence is not high: the contestable "
-                           "point and plausible alternative reading. Omit "
+                           "point and plausible alternative reading. Use null "
                            "if straightforward.",
         },
         "upstreamQuote": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Verbatim from the higher-authority layer at the "
-                           "divergence, or omit.",
+                           "divergence, or null.",
         },
         "downstreamQuote": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Verbatim from the lower layer at the divergence, "
-                           "or omit.",
+                           "or null.",
         },
     },
 }
 
 RECORD_VERDICT_TOOL = {
     "name": "record_verdict",
+    "strict": True,
     "description": "Record the diff verdict for this layer as a tight "
                    "nugget (divergence + materiality + action).",
     "input_schema": VERDICT_SCHEMA,
@@ -202,10 +205,17 @@ def _str(x: Any) -> str:
 
 
 def valid_verdict(v: Any) -> bool:
-    """Strict enum validation on receipt — the schema constrains the
-    API, but a retried/degraded response can still be malformed."""
-    if not isinstance(v, dict):
+    """Validate the tool schema locally, including required fields and
+    types: API schema guarantees do not cover truncated responses."""
+    if (not isinstance(v, dict)
+            or v.keys() != VERDICT_SCHEMA["properties"].keys()):
         return False
+    for field, schema in VERDICT_SCHEMA["properties"].items():
+        value = v[field]
+        if not isinstance(value, str) and not (
+            value is None and "null" in schema["type"]
+        ):
+            return False
     return (
         v.get("status") in DIFF_STATUSES
         and v.get("materiality") in MATERIALITY
@@ -407,7 +417,10 @@ def make_client():
             "ANTHROPIC_API_KEY not configured (env var or "
             f"{KEYS_ENV})."
         )
-    return Anthropic(api_key=api_key, max_retries=2, timeout=180.0)
+    # Thinking counts toward max_tokens: a full 16k-token turn would need
+    # ~90 tok/s to beat a 180 s cutoff, so use the SDK's 10-minute
+    # non-streaming default.
+    return Anthropic(api_key=api_key, max_retries=2, timeout=600.0)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -416,28 +429,45 @@ def make_client():
 
 def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                  system: str, user: str, model: str,
-                 max_tokens: int = 2400, max_turns: int = 5,
+                 max_tokens: int = 16000, max_turns: int = 5,
                  attempts: int = 2) -> dict | None:
     """Agent loop: may call research tools, then must call
-    record_verdict. Retries once (a fresh attempt) on schema mismatch;
-    returns None on persistent failure so the caller records a
-    failure sentinel instead of verdicts."""
+    record_verdict. Retries once (a fresh attempt) on a missing or invalid
+    verdict or truncation; logs and returns None on persistent failure
+    or refusal so the caller records a failure sentinel instead of verdicts."""
     tools = [LOOKUP_PROVISION_TOOL, LOOKUP_RULES_TOOL, RECORD_VERDICT_TOOL]
+    system += (
+        "\n\nUse the lookup tools as needed, then call record_verdict with "
+        "your final verdict. You MUST call record_verdict; prose alone "
+        "does not record a verdict. Use null for optional details that "
+        "are unavailable or do not apply."
+    )
     for _attempt in range(attempts):
         messages: list[dict] = [{"role": "user", "content": user}]
         for turn in range(max_turns):
+            # system and tools stay byte-identical across turns: changing
+            # either mid-conversation invalidates the thinking blocks
+            # replayed below (a 400 on enforced accounts) and the cache.
             resp = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
+                output_config={"effort": "medium"},
                 system=[{"type": "text", "text": system,
                          "cache_control": {"type": "ephemeral"}}],
                 tools=tools,
-                tool_choice=(
-                    {"type": "tool", "name": RECORD_VERDICT_TOOL["name"]}
-                    if turn == max_turns - 1 else {"type": "any"}
-                ),
+                tool_choice={"type": "auto"},
                 messages=messages,
             )
+            if getattr(resp, "stop_reason", None) == "refusal":
+                print("    FAILED: reconciliation analyst refused the request.",
+                      file=sys.stderr, flush=True)
+                return None
+            if getattr(resp, "stop_reason", None) == "max_tokens":
+                # Partial tool inputs and thinking blocks cannot be
+                # accepted or replayed; retry with fresh history.
+                print("    FAILED: reconciliation analyst response truncated.",
+                      file=sys.stderr, flush=True)
+                break
             tool_uses = [b for b in resp.content
                          if getattr(b, "type", None) == "tool_use"]
             record = next(
@@ -447,25 +477,36 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                 return normalize_verdict(record.input)
             if not tool_uses:
                 break
+            # Preserve the complete response, including signed thinking
+            # blocks, unchanged in the append-only tool conversation.
             messages.append({"role": "assistant", "content": resp.content})
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": t.id,
-                        "content": (
-                            "Rejected: one or more required fields were "
-                            "missing or not one of the allowed enum values. "
-                            "Call record_verdict again with every required "
-                            "field set to an allowed value."
-                            if t.name == RECORD_VERDICT_TOOL["name"]
-                            else _execute_lookup(conn, bill_id, t.name, t.input)
-                        ),
-                    }
-                    for t in tool_uses
-                ],
-            })
+            results: list[dict] = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": t.id,
+                    "content": (
+                        "Rejected: one or more required fields were "
+                        "missing, had invalid types, or were not one of "
+                        "the allowed enum values. "
+                        "Call record_verdict again with every required "
+                        "field set to an allowed value."
+                        if t.name == RECORD_VERDICT_TOOL["name"]
+                        else _execute_lookup(conn, bill_id, t.name, t.input)
+                    ),
+                }
+                for t in tool_uses
+            ]
+            if turn == max_turns - 2:
+                # The next request is this attempt's last: ask for the
+                # verdict after the tool results rather than editing
+                # system or tools.
+                results.append({
+                    "type": "text",
+                    "text": "Research is complete. Call record_verdict now.",
+                })
+            messages.append({"role": "user", "content": results})
+    print(f"    FAILED: no valid record_verdict after {attempts} attempts.",
+          file=sys.stderr, flush=True)
     return None
 
 

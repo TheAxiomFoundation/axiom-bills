@@ -8,8 +8,10 @@ have correctness coverage without API roundtrips or flake.
 from __future__ import annotations
 
 from datetime import date
+import json
 from textwrap import dedent
 
+import httpx
 import pytest
 import yaml
 
@@ -18,6 +20,7 @@ from axiom_bills._common.reencoder_llm import (
     ProposalRejected,
     build_prompt,
     parse_response,
+    propose_via_anthropic,
     validate_proposal,
 )
 
@@ -437,3 +440,114 @@ def test_validate_preserves_baseline_yaml_in_proposal_attr():
     )
     assert out.baseline_yaml == BASELINE
     assert "qualifying_child_ssn_included_on_return" in out.patched_yaml
+
+
+@pytest.fixture
+def anthropic_transport(monkeypatch):
+    """Exercise SDK serialization without sending requests to a provider."""
+    import anthropic
+
+    requests = []
+    response = {
+        "id": "msg_offline",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-5-5",
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 10, "output_tokens": 10},
+        "content": [],
+    }
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=response)
+
+    with anthropic.Anthropic(
+        api_key="offline-test-key",
+        base_url="https://anthropic.invalid",
+        http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+    ) as client:
+        monkeypatch.setattr(anthropic, "Anthropic", lambda: client)
+        yield requests, response
+
+
+def _propose(**kwargs):
+    return propose_via_anthropic(
+        baseline_yaml=BASELINE,
+        citation="26 USC 24(e)",
+        bill_number="H.R.778",
+        bill_op_text=OP_TEXT,
+        effective_from=date(2025, 1, 28),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("model", [None, "custom-model-override"])
+def test_propose_serializes_sonnet_request_and_parses_text_blocks(
+    anthropic_transport, model
+):
+    requests, response = anthropic_transport
+    proposal = yaml.safe_load(BASELINE)
+    proposal["rules"][0]["versions"].append({
+        "effective_from": "2025-01-28",
+        "formula": "qualifying_child_ssn_included_on_return",
+    })
+    response["content"] = [
+        {"type": "thinking", "thinking": "Checking the amendment.",
+         "signature": "offline-signature"},
+        {"type": "text", "text": "```yaml"},
+        {"type": "text", "text": yaml.safe_dump(proposal) + "```"},
+    ]
+
+    result = _propose(model=model)
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request["model"] == (model or "claude-sonnet-5-5")
+    assert result.model == request["model"]
+    assert result.baseline_yaml == BASELINE
+    assert "qualifying_child_ssn_included_on_return" in result.patched_yaml
+    assert request["output_config"] == {"effort": "low"}
+    assert request["max_tokens"] == 16000
+    assert not {"temperature", "top_p", "top_k", "thinking", "tool_choice"} & request.keys()
+    assert request["messages"][-1]["role"] == "user"
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "error", "message"),
+    [
+        ("refusal", ProposalRejected, "refused"),
+        ("max_tokens", RuntimeError, "truncated"),
+    ],
+)
+def test_propose_rejects_refusal_and_truncation_before_parsing(
+    anthropic_transport, stop_reason, error, message
+):
+    requests, response = anthropic_transport
+    response["stop_reason"] = stop_reason
+    response["content"] = [{"type": "text", "text": "{ unclosed: [stuff"}]
+
+    with pytest.raises(error, match=message):
+        _propose()
+
+    assert len(requests) == 1
+
+
+def test_propose_rejects_response_without_text(anthropic_transport):
+    _, response = anthropic_transport
+    proposal = yaml.safe_load(BASELINE)
+    proposal["rules"][0]["versions"].append({
+        "effective_from": "2025-01-28",
+        "formula": "qualifying_child_ssn_included_on_return",
+    })
+    # A valid proposal that appears only in a thinking block must not be
+    # parsed: the proposal is read from text blocks alone.
+    response["content"] = [
+        {"type": "thinking",
+         "thinking": "```yaml\n" + yaml.safe_dump(proposal) + "```",
+         "signature": "offline-signature"},
+    ]
+
+    with pytest.raises(ProposalRejected, match="not a YAML mapping"):
+        _propose()
