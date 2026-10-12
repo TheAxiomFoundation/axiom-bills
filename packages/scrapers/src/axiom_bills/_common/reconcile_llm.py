@@ -205,10 +205,17 @@ def _str(x: Any) -> str:
 
 
 def valid_verdict(v: Any) -> bool:
-    """Strict enum validation on receipt — the schema constrains the
-    API, but a retried/degraded response can still be malformed."""
-    if not isinstance(v, dict):
+    """Validate the tool schema locally, including required fields and
+    types: API schema guarantees do not cover truncated responses."""
+    if (not isinstance(v, dict)
+            or v.keys() != VERDICT_SCHEMA["properties"].keys()):
         return False
+    for field, schema in VERDICT_SCHEMA["properties"].items():
+        value = v[field]
+        if not isinstance(value, str) and not (
+            value is None and "null" in schema["type"]
+        ):
+            return False
     return (
         v.get("status") in DIFF_STATUSES
         and v.get("materiality") in MATERIALITY
@@ -426,8 +433,8 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                  attempts: int = 2) -> dict | None:
     """Agent loop: may call research tools, then must call
     record_verdict. Retries once (a fresh attempt) on a missing or invalid
-    verdict; logs and returns None on persistent failure or refusal so
-    the caller records a failure sentinel instead of verdicts."""
+    verdict or truncation; logs and returns None on persistent failure
+    or refusal so the caller records a failure sentinel instead of verdicts."""
     tools = [LOOKUP_PROVISION_TOOL, LOOKUP_RULES_TOOL, RECORD_VERDICT_TOOL]
     system += (
         "\n\nUse the lookup tools as needed, then call record_verdict with "
@@ -455,6 +462,12 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                 print("    FAILED: reconciliation analyst refused the request.",
                       file=sys.stderr, flush=True)
                 return None
+            if getattr(resp, "stop_reason", None) == "max_tokens":
+                # Partial tool inputs and thinking blocks cannot be
+                # accepted or replayed; retry with fresh history.
+                print("    FAILED: reconciliation analyst response truncated.",
+                      file=sys.stderr, flush=True)
+                break
             tool_uses = [b for b in resp.content
                          if getattr(b, "type", None) == "tool_use"]
             record = next(
@@ -473,7 +486,8 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
                     "tool_use_id": t.id,
                     "content": (
                         "Rejected: one or more required fields were "
-                        "missing or not one of the allowed enum values. "
+                        "missing, had invalid types, or were not one of "
+                        "the allowed enum values. "
                         "Call record_verdict again with every required "
                         "field set to an allowed value."
                         if t.name == RECORD_VERDICT_TOOL["name"]

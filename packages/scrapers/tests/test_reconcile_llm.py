@@ -4,8 +4,8 @@ The LLM is never called — a fake client is injected. Coverage:
 
 * fingerprint stability and skip logic (unchanged inputs → no calls),
 * section selection (encoding match + ≥1 op) against a fixture DB,
-* payload validation: enum rejection + retry path, and persistent
-  failure recording a layer-less failure sentinel,
+* payload validation: required fields, types, enums, and truncation;
+  retry paths and persistent failure recording a layer-less failure sentinel,
 * lookup-tool citation normalization (the LLM's '26 U.S.C. 32' /
   'IRC section 32' forms must still match the normalized store),
 * upsert uniqueness on (bill_id, section_citation).
@@ -176,6 +176,7 @@ VALID_VERDICT = {
     "action": "encode-in-model",
     "confidence": "high",
     "rationale": "The bill strikes $600 and inserts $750.",
+    "ambiguity": None,
     "upstreamQuote": "$600",
     "downstreamQuote": "$750",
 }
@@ -453,7 +454,8 @@ def test_analyst_history_is_append_only(conn, max_turns, research_turns):
     )
     calls = fake.calls
     if research_turns < max_turns:
-        assert result == VALID_VERDICT
+        assert result == {key: value for key, value in VALID_VERDICT.items()
+                          if value is not None}
         assert len(calls) == research_turns + 1
     else:
         assert result is None
@@ -480,7 +482,8 @@ def test_missing_final_verdict_retries_after_bounded_research(conn):
         fake, conn, "b1", system="Analyze.", user="Compare.",
         model="claude-sonnet-5-5", max_turns=2,
     )
-    assert result == VALID_VERDICT
+    assert result == {key: value for key, value in VALID_VERDICT.items()
+                      if value is not None}
     assert len(fake.calls) == 3
     assert fake.calls[1]["tools"] == fake.calls[0]["tools"]
     assert fake.calls[1]["messages"][-1]["content"][-1] == {
@@ -517,6 +520,110 @@ def test_refusal_is_handled_before_reading_content(conn, capsys):
     assert "billVsLaw" not in payload and "modelVsLaw" not in payload
 
 
+def test_truncation_is_handled_before_reading_content(conn, capsys):
+    # Truncated content must never be inspected, accepted, or replayed.
+    fake = FakeClient([SimpleNamespace(stop_reason="max_tokens")],
+                      repeat_last=True)
+    counts = reconcile_for_bill(conn, "b1", get_client=lambda: fake)
+    assert counts == {"sections": 1, "analyzed": 0, "skipped": 0, "failed": 1}
+    assert len(fake.calls) == 2
+    assert fake.calls[1]["messages"] == fake.calls[0]["messages"]
+    assert "analyst response truncated" in capsys.readouterr().err
+    payload = json.loads(conn.execute(
+        "SELECT payload FROM bill_reconciliations WHERE bill_id='b1'",
+    ).fetchone()["payload"])
+    assert payload["failed"] is True
+    assert "billVsLaw" not in payload and "modelVsLaw" not in payload
+
+
+@pytest.mark.parametrize("issue", [
+    "truncated-incomplete", "truncated-complete", "truncated-lookup",
+    "incomplete", "bad-type",
+])
+@pytest.mark.parametrize("recovers", [True, False])
+def test_sdk_invalid_verdict_retries_or_records_failure(conn, issue, recovers):
+    """Real SDK, offline transport: malformed results never reach storage."""
+    thinking = {
+        "type": "thinking", "thinking": "", "signature": "test-signature",
+    }
+    lookup = {
+        "type": "tool_use", "id": "lookup1", "name": "lookup_provision",
+        "input": {"citation": "26 USC 32"},
+    }
+    bad_input = dict(VALID_VERDICT)
+    if issue in ("truncated-incomplete", "incomplete"):
+        for key in ("rationale", "ambiguity", "upstreamQuote", "downstreamQuote"):
+            bad_input.pop(key)
+    elif issue == "bad-type":
+        bad_input["upstreamQuote"] = 17
+    truncated = issue.startswith("truncated-")
+    requests = []
+
+    def respond(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        call = len(requests)
+        if call == 1:
+            content, stop_reason = [thinking, lookup], "tool_use"
+        else:
+            invalid = call == 2 or not recovers
+            block = {
+                "type": "tool_use", "id": f"verdict{call}",
+                "name": "record_verdict",
+                "input": bad_input if invalid else VALID_VERDICT,
+            }
+            if invalid and issue == "truncated-lookup":
+                # Executing this incomplete lookup would raise on .strip().
+                block.update(name="lookup_provision", input={"citation": 17})
+            content = [block]
+            stop_reason = "max_tokens" if invalid and truncated else "tool_use"
+        return httpx.Response(200, json={
+            "id": f"msg{call}", "type": "message", "role": "assistant",
+            "model": payload["model"], "content": content,
+            "stop_reason": stop_reason, "stop_sequence": None,
+            "usage": {"input_tokens": 10, "output_tokens": 16000},
+        })
+
+    with Anthropic(
+        api_key="test-key", max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+    ) as client:
+        counts = reconcile_for_bill(conn, "b1", get_client=lambda: client)
+
+    assert counts == {
+        "sections": 1, "analyzed": int(recovers), "skipped": 0,
+        "failed": int(not recovers),
+    }
+    assert len(requests) == (4 if recovers else (3 if truncated else 10))
+    if truncated:
+        # Discard the entire truncated attempt, including prior research.
+        assert requests[2]["messages"] == requests[0]["messages"]
+    else:
+        # Complete but invalid tool input receives corrective feedback.
+        assert requests[2]["messages"][:3] == requests[1]["messages"]
+        assert "Rejected:" in requests[2]["messages"][-1]["content"][0]["content"]
+    bill_requests = requests[:-1] if recovers else requests
+    for request in bill_requests:
+        assert request["system"] == requests[0]["system"]
+        assert request["tools"] == requests[0]["tools"]
+    row = conn.execute(
+        "SELECT payload, fingerprint FROM bill_reconciliations WHERE bill_id='b1'",
+    ).fetchone()
+    payload = json.loads(row["payload"])
+    assert row["fingerprint"] == section_fingerprint(_encoded_section())
+    if recovers:
+        expected = {key: value for key, value in VALID_VERDICT.items()
+                    if value is not None}
+        assert payload["billVsLaw"] == payload["modelVsLaw"] == expected
+        assert "failed" not in payload
+    else:
+        assert payload["failed"] is True
+        assert "billVsLaw" not in payload and "modelVsLaw" not in payload
+        assert reconcile_for_bill(conn, "b1", get_client=lambda: None) == {
+            "sections": 1, "analyzed": 0, "skipped": 1, "failed": 0,
+        }
+
+
 def test_valid_verdict_rejects_bad_enums():
     assert valid_verdict(VALID_VERDICT)
     for key in ("status", "materiality", "action", "confidence"):
@@ -524,6 +631,35 @@ def test_valid_verdict_rejects_bad_enums():
         assert not valid_verdict(bad), key
     assert not valid_verdict(None)
     assert not valid_verdict(dict(VALID_VERDICT, rationale="", divergence=""))
+
+
+@pytest.mark.parametrize("field", list(VALID_VERDICT))
+def test_valid_verdict_rejects_missing_required_fields(field):
+    incomplete = dict(VALID_VERDICT)
+    incomplete.pop(field)
+    assert not valid_verdict(incomplete)
+
+
+@pytest.mark.parametrize("field", list(VALID_VERDICT))
+@pytest.mark.parametrize("bad_value", [True, 17, [], {}])
+def test_valid_verdict_rejects_invalid_field_types(field, bad_value):
+    assert not valid_verdict(dict(VALID_VERDICT, **{field: bad_value}))
+
+
+@pytest.mark.parametrize("field", [
+    "status", "divergence", "materiality", "action", "confidence", "rationale",
+])
+def test_valid_verdict_rejects_null_required_strings(field):
+    assert not valid_verdict(dict(VALID_VERDICT, **{field: None}))
+
+
+def test_valid_verdict_accepts_nullable_details():
+    assert valid_verdict(dict(VALID_VERDICT, ambiguity=None,
+                              upstreamQuote=None, downstreamQuote=None))
+
+
+def test_valid_verdict_rejects_unexpected_fields():
+    assert not valid_verdict(dict(VALID_VERDICT, unexpected="extra"))
 
 
 def test_invalid_enum_then_retry_records_row(conn):
