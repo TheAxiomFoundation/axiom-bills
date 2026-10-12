@@ -536,8 +536,17 @@ def test_propose_rejects_refusal_and_truncation_before_parsing(
 
 def test_propose_rejects_response_without_text(anthropic_transport):
     _, response = anthropic_transport
+    proposal = yaml.safe_load(BASELINE)
+    proposal["rules"][0]["versions"].append({
+        "effective_from": "2025-01-28",
+        "formula": "qualifying_child_ssn_included_on_return",
+    })
+    # A valid proposal that appears only in a thinking block must not be
+    # parsed: the proposal is read from text blocks alone.
     response["content"] = [
-        {"type": "thinking", "thinking": "No YAML.", "signature": "offline-signature"},
+        {"type": "thinking",
+         "thinking": "```yaml\n" + yaml.safe_dump(proposal) + "```",
+         "signature": "offline-signature"},
     ]
 
     with pytest.raises(ProposalRejected, match="not a YAML mapping"):

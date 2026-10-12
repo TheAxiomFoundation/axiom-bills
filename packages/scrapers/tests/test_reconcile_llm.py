@@ -181,6 +181,20 @@ VALID_VERDICT = {
 }
 
 
+FINAL_NUDGE = "Research is complete. Call record_verdict now."
+
+
+def _snapshot(value):
+    """Copy dicts and lists all the way down, keeping response blocks
+    as-is, so a later in-place edit of an already-sent turn shows up as
+    a difference between recorded requests."""
+    if isinstance(value, dict):
+        return {k: _snapshot(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_snapshot(v) for v in value]
+    return value
+
+
 class FakeMessages:
     """Yields queued responses; optionally repeats the last one forever
     (for persistent-failure loops). Raises if called with none left."""
@@ -191,9 +205,9 @@ class FakeMessages:
         self.calls: list[dict] = []
 
     def create(self, **kwargs):
-        # Snapshot the conversation at request time; the agent appends
-        # subsequent turns to its original list.
-        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
+        # Snapshot the request as sent; the agent keeps appending to (and
+        # must never edit) its original message list.
+        self.calls.append(_snapshot(kwargs))
         if not self._responses:
             raise AssertionError("unexpected LLM call — no responses queued")
         if self._repeat_last and len(self._responses) == 1:
@@ -396,15 +410,63 @@ def test_sdk_serializes_sonnet_request_and_preserves_thinking(conn):
         for field in ("ambiguity", "upstreamQuote", "downstreamQuote"):
             assert schema["properties"][field]["type"] == ["string", "null"]
 
-    # The last turn offers only the verdict tool, but still uses auto.
+    # The last turn keeps the same system prompt and tool set (editing
+    # either invalidates the replayed thinking block); the nudge to
+    # record the verdict follows the tool results instead.
     assert len(requests[0]["tools"]) == 3
-    assert [t["name"] for t in requests[1]["tools"]] == ["record_verdict"]
-    assert "Call record_verdict now" in requests[1]["system"][0]["text"]
+    assert requests[1]["tools"] == requests[0]["tools"]
+    assert requests[1]["system"] == requests[0]["system"]
     history = requests[1]["messages"]
     assert history[:1] == requests[0]["messages"]
     assert history[1] == {"role": "assistant", "content": [thinking, lookup]}
     assert history[2]["content"][0]["tool_use_id"] == "lookup1"
     assert "The credit is $600." in history[2]["content"][0]["content"]
+    assert history[2]["content"][-1] == {"type": "text", "text": FINAL_NUDGE}
+
+
+def _nudges(messages: list) -> int:
+    return sum(
+        1
+        for m in messages if isinstance(m["content"], list)
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("text") == FINAL_NUDGE
+    )
+
+
+@pytest.mark.parametrize("max_turns", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("research_turns", [0, 1, 2, 3, 4, 5])
+def test_analyst_history_is_append_only(conn, max_turns, research_turns):
+    """For every turn budget and every point at which the verdict
+    arrives (or never does): each request in an attempt resends the
+    same system prompt and tools and extends the previous request's
+    messages without editing them, and the final-turn nudge appears
+    once, just before the attempt's last request."""
+    responses = [
+        _Resp([_ToolUse("lookup_provision", {"citation": "26 USC 32"},
+                        block_id=f"tu{i}")])
+        for i in range(research_turns)
+    ] + [_verdict_resp(VALID_VERDICT)]
+    fake = FakeClient(responses, repeat_last=True)
+    result = _run_analyst(
+        fake, conn, "b1", system="Analyze.", user="Compare.",
+        model="claude-sonnet-5-5", max_turns=max_turns, attempts=1,
+    )
+    calls = fake.calls
+    if research_turns < max_turns:
+        assert result == VALID_VERDICT
+        assert len(calls) == research_turns + 1
+    else:
+        assert result is None
+        assert len(calls) == max_turns
+    for prev, cur in zip(calls, calls[1:]):
+        assert cur["system"] == calls[0]["system"]
+        assert cur["tools"] == calls[0]["tools"]
+        assert cur["tool_choice"] == {"type": "auto"}
+        assert cur["messages"][:len(prev["messages"])] == prev["messages"]
+    expected_nudge = 1 if len(calls) == max_turns and max_turns > 1 else 0
+    assert _nudges(calls[-1]["messages"]) == expected_nudge
+    if expected_nudge:
+        assert calls[-1]["messages"][-1]["content"][-1]["text"] == FINAL_NUDGE
 
 
 def test_missing_final_verdict_retries_after_bounded_research(conn):
@@ -420,7 +482,10 @@ def test_missing_final_verdict_retries_after_bounded_research(conn):
     )
     assert result == VALID_VERDICT
     assert len(fake.calls) == 3
-    assert [t["name"] for t in fake.calls[1]["tools"]] == ["record_verdict"]
+    assert fake.calls[1]["tools"] == fake.calls[0]["tools"]
+    assert fake.calls[1]["messages"][-1]["content"][-1] == {
+        "type": "text", "text": FINAL_NUDGE,
+    }
     # One fresh attempt follows the bounded research attempt.
     assert fake.calls[2]["messages"] == fake.calls[0]["messages"]
 

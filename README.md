@@ -148,7 +148,9 @@ list/structural changes get an LLM-drafted proposal
 (`propose-llm-variants`, needs `ANTHROPIC_API_KEY`).
 
 Variant proposals and reconciliation verdicts default to `claude-sonnet-5-5`.
-Set `AXIOM_LLM_MODEL` to override both. Proposals use low effort;
+Set `AXIOM_LLM_MODEL` to override both; both paths send
+`output_config.effort`, so the override must be a model that accepts it
+(Sonnet 4.5 and Haiku 4.5 do not). Proposals use low effort;
 reconciliation uses medium effort, with a 16,000-token budget per call for
 both paths. Stored proposals and verdicts retain their original provenance.
 

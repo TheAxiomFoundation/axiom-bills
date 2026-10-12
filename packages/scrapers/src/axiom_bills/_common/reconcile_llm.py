@@ -410,7 +410,10 @@ def make_client():
             "ANTHROPIC_API_KEY not configured (env var or "
             f"{KEYS_ENV})."
         )
-    return Anthropic(api_key=api_key, max_retries=2, timeout=180.0)
+    # Thinking counts toward max_tokens: a full 16k-token turn would need
+    # ~90 tok/s to beat a 180 s cutoff, so use the SDK's 10-minute
+    # non-streaming default.
+    return Anthropic(api_key=api_key, max_retries=2, timeout=600.0)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -435,16 +438,16 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
     for _attempt in range(attempts):
         messages: list[dict] = [{"role": "user", "content": user}]
         for turn in range(max_turns):
-            final_turn = turn == max_turns - 1
+            # system and tools stay byte-identical across turns: changing
+            # either mid-conversation invalidates the thinking blocks
+            # replayed below (a 400 on enforced accounts) and the cache.
             resp = client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 output_config={"effort": "medium"},
-                system=[{"type": "text", "text": system + (
-                             "\nResearch is complete. Call record_verdict now."
-                             if final_turn else ""),
+                system=[{"type": "text", "text": system,
                          "cache_control": {"type": "ephemeral"}}],
-                tools=[RECORD_VERDICT_TOOL] if final_turn else tools,
+                tools=tools,
                 tool_choice={"type": "auto"},
                 messages=messages,
             )
@@ -464,24 +467,30 @@ def _run_analyst(client, conn: sqlite3.Connection, bill_id: str, *,
             # Preserve the complete response, including signed thinking
             # blocks, unchanged in the append-only tool conversation.
             messages.append({"role": "assistant", "content": resp.content})
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": t.id,
-                        "content": (
-                            "Rejected: one or more required fields were "
-                            "missing or not one of the allowed enum values. "
-                            "Call record_verdict again with every required "
-                            "field set to an allowed value."
-                            if t.name == RECORD_VERDICT_TOOL["name"]
-                            else _execute_lookup(conn, bill_id, t.name, t.input)
-                        ),
-                    }
-                    for t in tool_uses
-                ],
-            })
+            results: list[dict] = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": t.id,
+                    "content": (
+                        "Rejected: one or more required fields were "
+                        "missing or not one of the allowed enum values. "
+                        "Call record_verdict again with every required "
+                        "field set to an allowed value."
+                        if t.name == RECORD_VERDICT_TOOL["name"]
+                        else _execute_lookup(conn, bill_id, t.name, t.input)
+                    ),
+                }
+                for t in tool_uses
+            ]
+            if turn == max_turns - 2:
+                # The next request is this attempt's last: ask for the
+                # verdict after the tool results rather than editing
+                # system or tools.
+                results.append({
+                    "type": "text",
+                    "text": "Research is complete. Call record_verdict now.",
+                })
+            messages.append({"role": "user", "content": results})
     print(f"    FAILED: no valid record_verdict after {attempts} attempts.",
           file=sys.stderr, flush=True)
     return None
