@@ -17,7 +17,7 @@
 --   * a corpus section is matched only if it's in_corpus, has a
 --     citation_path, and has at least one applied op.
 
-create or replace view bills.bill_list_summary as
+create or replace view bills.bill_list_summary with (security_invoker = true) as
 select
   b.id,
   b.jurisdiction,

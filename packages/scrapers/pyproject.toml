@@ -16,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-httpx>=0.30", "ruff>=0.5"]
+dev = [
+    "hypothesis>=6",
+    "pytest>=8",
+    "pytest-httpx>=0.30",
+    "ruff>=0.5",
+]
 
 [project.scripts]
 axiom-bills = "axiom_bills.cli:main"

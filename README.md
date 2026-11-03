@@ -136,12 +136,24 @@ push to `main` that touches `packages/web/`. It needs one repo secret,
 secret is set the workflow skips with a warning; deploy manually in the
 meantime with `cd packages/web && vercel --prod`.
 
-Every table in `bills` has row-level security and a public read policy, and
-only the service role writes. A migration that adds a table must add both, and
-one that replaces a view must set `security_invoker` again.
-`packages/scrapers/tests/test_supabase_row_level_security.py` fails otherwise.
-Set `AXIOM_BILLS_TEST_POSTGRES_URL` to a superuser connection on PostgreSQL 15
-or later to replay the migrations and test each role's access; CI does this.
+Every table in `bills` has row-level security and one policy, "Public read",
+which lets anon and authenticated select every row. Only the service role
+writes, and it bypasses row-level security. The views run with their caller's
+rights (`security_invoker`), so the same policies apply through them.
+
+A migration that adds a table to `bills` must, in the same file, create its
+"Public read" policy and then enable row-level security. Give the new table a
+row in `LATER_SEED_ROWS` in
+`packages/scrapers/tests/test_supabase_row_level_security.py`, so the tests can
+compare what each role reads. A migration that creates or replaces a view must
+create it `with (security_invoker = true)`, because `create or replace view`
+resets view options. The migrations need PostgreSQL 15 or later.
+
+That test file's file checks run everywhere. Its Postgres checks replay the
+migrations and test each role's access. They need `psql` on `PATH` and
+`AXIOM_BILLS_TEST_POSTGRES_URL` set to a superuser connection on PostgreSQL 15
+or later. Without the URL they skip, except when `CI` is set, where they fail.
+CI runs them on `postgres:17`.
 
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.

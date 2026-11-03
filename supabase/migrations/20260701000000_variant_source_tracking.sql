@@ -10,7 +10,7 @@ alter table bills.rule_variants
 -- whether to act on it" without re-deriving the join. One row per
 -- (bill, file); consumers filter on bill_status themselves (e.g.
 -- bill_status in ('enacted','signed') to only apply law that passed).
-create or replace view bills.current_rule_patches as
+create or replace view bills.current_rule_patches with (security_invoker = true) as
 select
   v.id,
   b.jurisdiction,
