@@ -136,6 +136,13 @@ push to `main` that touches `packages/web/`. It needs one repo secret,
 secret is set the workflow skips with a warning; deploy manually in the
 meantime with `cd packages/web && vercel --prod`.
 
+Every table in `bills` has row-level security and a public read policy, and
+only the service role writes. A migration that adds a table must add both, and
+one that replaces a view must set `security_invoker` again.
+`packages/scrapers/tests/test_supabase_row_level_security.py` fails otherwise.
+Set `AXIOM_BILLS_TEST_POSTGRES_URL` to a superuser connection on PostgreSQL 15
+or later to replay the migrations and test each role's access; CI does this.
+
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.
 
