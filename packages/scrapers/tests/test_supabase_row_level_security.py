@@ -18,8 +18,8 @@ Without the URL they skip, except under CI, where they fail. For every table,
 view and role, they check that:
 
 - immediately after this migration, anon and authenticated read exactly what
-  they read immediately before it, and after every migration, exactly what the
-  table owner reads;
+  they read immediately before it, and once every later migration has run,
+  exactly what the table owner reads;
 - each table has row-level security and one policy, a permissive SELECT for
   anon and authenticated using (true), and no table forces it on its owner;
 - neither role holds any privilege but SELECT, and a stray insert, update or
@@ -1123,13 +1123,14 @@ def test_a_single_kind_list_reads_the_new_index(copy_of, pre):
     indexes = _index_names(json.loads(database.as_role("anon", explain)))
     assert INDEX in indexes and "idx_bills_status_at" not in indexes
     # Without the new index, anon's plan walks idx_bills_status_at across both
-    # jurisdictions: under row-level security, the planner has no statistics
-    # for kind, because enum equality isn't leakproof.
+    # jurisdictions. Under row-level security, the planner compares a value with
+    # kind's most common values only through a leakproof operator, and enum
+    # equality isn't leakproof, so it treats every kind as equally common.
     drop = f"drop index bills.{INDEX}"
     without = json.loads(database.as_role("anon", explain, setup=drop))
     assert "idx_bills_status_at" in _index_names(without)
-    # Row-level security doesn't apply to the owner, so its plan uses the
-    # statistics and idx_bills_kind.
+    # Row-level security doesn't apply to the owner, so its plan uses kind's
+    # most common values and idx_bills_kind.
     owner = database.run(f"begin; {drop}; {explain}; rollback;")
     assert "idx_bills_kind" in _index_names(json.loads(owner))
 
