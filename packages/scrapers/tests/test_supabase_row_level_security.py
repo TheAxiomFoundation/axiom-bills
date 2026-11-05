@@ -17,9 +17,8 @@ or later, where security_invoker views arrived:
 Without the URL they skip, except under CI, where they fail. For every table,
 view and role, they check that:
 
-- immediately after this migration, anon and authenticated read exactly what
-  they read immediately before it, and once every later migration has run,
-  exactly what the table owner reads;
+- right after this migration, anon and authenticated read what they read right
+  before it, and once every later migration has run, what the table owner reads;
 - each table has row-level security and one policy, a permissive SELECT for
   anon and authenticated using (true), and no table forces it on its owner;
 - neither role holds any privilege but SELECT, and a stray insert, update or
@@ -30,7 +29,8 @@ view and role, they check that:
 - the migration runs in one transaction under a lock timeout, takes its steps
   in a fixed order, hides no row from anon even run one statement at a time,
   doesn't deadlock with the bill page, and changes nothing when it runs again;
-- a bill list filtered to one rare kind reads the new index.
+- on a jurisdiction of 12,000 bills, a list filtered to one rare kind reads the
+  new index.
 """
 
 from __future__ import annotations
@@ -648,7 +648,7 @@ class Server:
         name = f"axiom_bills_rls_{uuid.uuid4().hex[:12]}"
         self.databases.append(name)
         self.admin.run(f"create database {name}" + (f" template {template.name}" if template else ""))
-        # Studio's editor resolved the coverage migrations' unqualified names.
+        # The coverage migrations name jurisdictions without a schema.
         self.admin.run(f"alter database {name} set search_path = bills, public")
         return Database(_database_url(self.admin.url, name), name)
 
@@ -892,7 +892,7 @@ def _sql_array(words) -> str:
 
 @pytest.mark.parametrize("role", READ_ROLES)
 def test_a_role_holds_no_privilege_but_select(replay, role):
-    """Row-level security doesn't cover TRUNCATE, REFERENCES or TRIGGER, so no grant may."""
+    """Row-level security doesn't cover TRUNCATE, REFERENCES, TRIGGER or MAINTAIN, so no grant may."""
     database = replay.database
     privileges = list(TABLE_PRIVILEGES)
     if int(database.run("show server_version_num")) >= 170000:
@@ -944,7 +944,7 @@ def _count_changed(statement: str) -> str:
 
 
 @pytest.mark.parametrize("role", READ_ROLES)
-def test_a_stray_write_grant_still_changes_nothing(replay, role):
+def test_a_stray_insert_update_or_delete_grant_changes_no_row(replay, role):
     database = replay.database
     tables = database.tables()
     assert tables

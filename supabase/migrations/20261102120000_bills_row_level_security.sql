@@ -5,7 +5,8 @@
 -- SELECT through an explicit policy. Writes still go through the service role,
 -- which bypasses row-level security. With no write policy, an insert, update or
 -- delete grant added by mistake later still changes no row. Row-level security
--- doesn't cover TRUNCATE, REFERENCES or TRIGGER, so neither role may hold them.
+-- doesn't cover TRUNCATE, REFERENCES, TRIGGER or MAINTAIN, so neither role may
+-- hold them.
 --
 -- The views now run with their caller's rights, not their owner's. A migration
 -- that replaces one of them must create it with (security_invoker = true),
@@ -14,9 +15,9 @@
 -- Under row-level security, the planner compares a value with a column's most
 -- common values only through a leakproof operator, and PostgreSQL doesn't mark
 -- enum equality leakproof. For kind it then treats every kind as equally
--- common and overestimates a rare one, so it can read a list of one rare kind
--- by walking idx_bills_status_at across every jurisdiction. The new index keeps
--- that walk inside one jurisdiction.
+-- common and overestimates a rare one, so it can plan a list of one rare kind
+-- as a walk of idx_bills_status_at across every jurisdiction. The new index
+-- keeps that walk inside one jurisdiction.
 --
 -- Statement order matters on a database that is serving reads:
 -- - One transaction with a lock timeout: a lock wait aborts the whole file, so
