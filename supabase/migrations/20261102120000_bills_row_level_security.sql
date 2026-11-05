@@ -11,11 +11,12 @@
 -- that replaces one of them must create it with (security_invoker = true),
 -- because CREATE OR REPLACE VIEW resets view options.
 --
--- Under row-level security, PostgreSQL won't use a column's statistics through
--- an operator that isn't leakproof, and enum equality isn't. Without statistics
--- for kind, the planner reads a list filtered to one rare kind by walking
--- idx_bills_status_at across every jurisdiction. The new index keeps that walk
--- inside one jurisdiction.
+-- Under row-level security, the planner compares a value with a column's most
+-- common values only through a leakproof operator, and PostgreSQL doesn't mark
+-- enum equality leakproof. For kind it then treats every kind as equally
+-- common and overestimates a rare one, so it can read a list of one rare kind
+-- by walking idx_bills_status_at across every jurisdiction. The new index keeps
+-- that walk inside one jurisdiction.
 --
 -- Statement order matters on a database that is serving reads:
 -- - One transaction with a lock timeout: a lock wait aborts the whole file, so
