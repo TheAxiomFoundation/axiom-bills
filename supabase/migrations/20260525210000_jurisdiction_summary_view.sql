@@ -1,6 +1,6 @@
 -- Per-jurisdiction roll-up so the home page can render in ONE query
 -- instead of 52 × 3 = 156 sequential PostgREST round-trips.
-create or replace view bills.jurisdiction_summary as
+create or replace view bills.jurisdiction_summary with (security_invoker = true) as
 select
   j.code,
   j.name,

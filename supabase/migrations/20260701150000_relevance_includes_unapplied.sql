@@ -4,7 +4,7 @@
 -- redesignate op) — counting only applied ops made such bills silently
 -- invisible to the re-encode trigger (no chip, no flag, no variant).
 
-create or replace view bills.bill_list_summary as
+create or replace view bills.bill_list_summary with (security_invoker = true) as
 select
   b.id,
   b.jurisdiction,
