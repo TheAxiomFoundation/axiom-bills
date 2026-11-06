@@ -296,6 +296,44 @@ The status-text → normalized-status map lives per-jurisdiction in
 `jurisdictions/<code>/bill/status.py`, covered by
 `tests/test_status_patterns.py` (24 patterns currently green).
 
+### New York's refresh
+
+The New York scraper follows the Open Legislation API's
+[guide to keeping up with changes](https://legislation.nysenate.gov/static/docs/html/keeping_up.html).
+The first run for a session notes the time, lists every bill and fetches each
+one, starting at most one request every 0.1 seconds. Each later run asks the
+update feed what changed since the last noted time, then fetches those bills
+and any the last run left behind. Both kinds of run write each bill as it
+arrives.
+
+The refresh workflow gives the scrape a 28-minute budget inside the job's
+60-minute cap. When the budget runs out, the scraper stops fetching and saves
+its place in `refresh_state`, and the next run continues from there. At 0.1
+seconds a request a run fetches at most 16,800 bills, so a session's first load
+takes at least two runs.
+
+The workflow copies the saved place down with `hydrate-refresh-state`. It saves
+the place back with `push-refresh-state` only after `sync-supabase` succeeds, so
+a bill leaves the saved list only once it has reached Supabase. The hydrate step
+stops the job when `bills.refresh_state` doesn't exist, because the migration
+that creates the table also corrects the chamber labels the sync matches bills
+on.
+
+`scrape` tells the workflow how the run ended:
+
+| Exit | When | What the workflow does |
+|---|---|---|
+| 0 | The run fetched every bill it set out to | Syncs and saves the place |
+| 4 | The budget ran out with bills left, after at least one came back | Syncs, saves the place and warns |
+| 3 | Some bills failed, or the budget ran out before the first came back | Syncs the rest, saves the place and fails the job |
+| Any other | The run couldn't read the bill list or the feed to the end, or hit an unexpected error | Fails the job and syncs nothing |
+
+Any 4xx but a 404 stops the run at once, because every later request would meet
+the same answer. Three other failures in a row stop it too. The run treats a 404
+as a removal, logs the print number and leaves the row in place, and ten in a row
+stop the run and keep those bills for the next one. A `--limit` run ignores the
+saved place and saves none.
+
 ## Why not OpenStates
 
 OpenStates is a great normalizer but: (a) free-tier rate limits make
