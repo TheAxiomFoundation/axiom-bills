@@ -82,6 +82,9 @@ def action_fingerprint(occurred_at: datetime, action_text: str, *,
     status and source URL stay out, because a scraper fix can change those on an
     action that already happened. An undated action goes by its text alone (see
     BillAction.undated).
+
+    supabase/manual/bill_action_cleanup.sql computes the same hash in SQL, and
+    tests/test_bill_action_cleanup.py holds the two together.
     """
     if undated:
         return UNDATED_ACTION_SCHEME + hashlib.sha256(action_text.encode()).hexdigest()

@@ -39,9 +39,10 @@
 -- What each kept row holds:
 -- - Its action: bill, moment and text. An action's copies share these.
 -- - ingested_at: the earliest copy's, so it still says when we first stored it.
--- - chamber, normalized_status, source_url: the last stored copy's. Where copies
---   differ, it's because a later scraper fixed them. The next scrape corrects
---   any row where heap order and ingest order disagree.
+-- - chamber, normalized_status, source_url: those of the copy on the last page that
+--   holds one, and within a batch the latest ingest. Heap order and ingest order
+--   often disagree, but copies rarely differ on these fields, and the next scrape
+--   writes over them whichever copy won.
 -- - fingerprint: the current scheme's, which the sync computes the same way.
 --
 -- Maryland also dated its current status and "Passed by the General Assembly"
@@ -222,7 +223,8 @@ begin
   if (select built_at from bill_action_cleanup.state) is not null then
     raise exception 'build already ran, so the copy is finished';
   end if;
-  if first_page <> (select coalesce(max(c.next_page), 0) from bill_action_cleanup.copied c) then
+  if next_page <= first_page
+     or first_page <> (select coalesce(max(c.next_page), 0) from bill_action_cleanup.copied c) then
     raise exception 'copy_batch(%, %) is out of order', first_page, next_page;
   end if;
 
@@ -238,8 +240,8 @@ begin
     select r.*, bill_action_cleanup.action_fingerprint(r.occurred_at, r.action_text, r.undated) as fingerprint
       from raw r
   ), actions as materialized (
-    -- One row per action in this batch: the last stored copy, with the earliest
-    -- dates among the batch's copies.
+    -- One row per action in this batch: the copy with the latest ingest, with the
+    -- earliest dates among the batch's copies.
     select distinct on (i.bill_id, i.fingerprint)
            i.id, i.bill_id, i.chamber, i.action_text, i.normalized_status, i.source_url, i.fingerprint,
            min(i.occurred_at) over same_action as first_occurred,
@@ -353,7 +355,8 @@ begin
   if (select built_at from bill_action_cleanup.state) is null then
     raise exception 'run build first';
   end if;
-  if first_page <> (select coalesce(max(v.next_page), 0) from bill_action_cleanup.verified v) then
+  if next_page <= first_page
+     or first_page <> (select coalesce(max(v.next_page), 0) from bill_action_cleanup.verified v) then
     raise exception 'verify_batch(%, %) is out of order', first_page, next_page;
   end if;
 

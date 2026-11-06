@@ -3,7 +3,7 @@
 Each CI refresh starts from an empty SQLite that gives every bill a new random
 id. The old fingerprint hashed that id, so the sync's unique key
 (bill_id, fingerprint) never matched and every run stored another copy of every
-action: 122 million rows for about 1.5 million actions. Maryland added a second
+action: about 125 million rows for about 1.3 million actions. Maryland added a second
 way in: it dated two actions with the time the state wrote its feed.
 
 These properties hold for every input:

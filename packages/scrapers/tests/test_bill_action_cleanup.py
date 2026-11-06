@@ -322,6 +322,23 @@ def test_the_sql_fingerprint_matches_the_python_one(fingerprint_database, action
     ]
 
 
+@pytest.mark.parametrize(
+    "moment",
+    [
+        datetime(1, 1, 1, tzinfo=UTC),
+        # What a two-digit year in a feed would parse to.
+        datetime(26, 1, 14, tzinfo=UTC),
+        datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=UTC),
+    ],
+)
+def test_the_two_fingerprints_agree_at_the_edges_of_the_calendar(fingerprint_database, moment) -> None:
+    out = fingerprint_database.run(
+        f"select bill_action_cleanup.action_fingerprint('{moment.isoformat()}'::timestamptz, 'Text', false)"
+    )
+
+    assert out == action_fingerprint(moment, "Text")
+
+
 @pytest.fixture(scope="module")
 def fingerprint_database(
     replayable: Server,  # noqa: F811 - a fixture
@@ -450,6 +467,64 @@ def test_the_latest_ingest_wins_within_a_batch_even_when_the_heap_disagrees(old_
     assert rows[0]["ingested_at"] == FIRST_REFRESH + timedelta(hours=1)
 
 
+def _pages_holding(database: Database, text: str) -> set[str]:
+    return set(database.run(f"""
+        select distinct (ctid::text::point)[0]::bigint from bills.bill_actions
+         where action_text = {_sql_text(text)}
+    """).split())
+
+
+# Enough long rows to push whatever follows them onto another heap page.
+FILLER = [
+    Copy(OTHER, DAYS[1], f"Filler {place}", url="https://example.test/filler") for place in range(8)
+]
+
+
+def test_a_later_batch_brings_the_kept_row_up_to_date(old_table) -> None:
+    _store(old_table.database, [
+        Copy(OTHER, DAYS[0], "Introduced", hours_in=0, chamber="lower", status="introduced",
+             url="https://example.test/first"),
+        Copy(OTHER, DAYS[0], "Referred", hours_in=0, chamber="lower", url="https://example.test/first"),
+        *FILLER,
+        Copy(OTHER, DAYS[0], "Introduced", hours_in=2, chamber="upper", status="signed",
+             url="https://example.test/last"),
+        # A later copy can also clear a field.
+        Copy(OTHER, DAYS[0], "Referred", hours_in=2, chamber=None, url="https://example.test/last"),
+    ])
+    assert len(_pages_holding(old_table.database, "Introduced")) == 2
+    assert len(_pages_holding(old_table.database, "Referred")) == 2
+
+    old_table.through_verify(pages=1)
+    changed = old_table.step("status")["rows_changed"]
+    old_table.step("swap")
+
+    rows = {row["action_text"]: row for row in _parsed(old_table.actions())}
+    assert changed == 2
+    assert (rows["Introduced"]["chamber"], rows["Introduced"]["normalized_status"]) == ("upper", "signed")
+    assert rows["Introduced"]["source_url"].startswith("https://example.test/last")
+    assert rows["Referred"]["chamber"] is None
+    assert rows["Introduced"]["ingested_at"] == FIRST_REFRESH
+
+
+def test_between_batches_the_last_page_decides_even_over_a_later_ingest(old_table) -> None:
+    """Intended. A batch can't tell which ingest time the kept row's fields came from,
+    and tracking it would add a write for nearly every row of the old table. These
+    fields rarely differ, and the next scrape writes over them whichever copy won."""
+    _store(old_table.database, [
+        Copy(OTHER, DAYS[0], "Introduced", hours_in=5, url="https://example.test/latest-ingest"),
+        *FILLER,
+        Copy(OTHER, DAYS[0], "Introduced", hours_in=1, url="https://example.test/last-page"),
+    ])
+    assert len(_pages_holding(old_table.database, "Introduced")) == 2
+
+    old_table.through_verify(pages=1)
+    old_table.step("swap")
+
+    row = next(row for row in _parsed(old_table.actions()) if row["action_text"] == "Introduced")
+    assert row["source_url"].startswith("https://example.test/last-page")
+    assert row["ingested_at"] == FIRST_REFRESH + timedelta(hours=1)
+
+
 def test_every_scheme_the_sync_writes_lands_in_the_new_table(old_table) -> None:
     _store(old_table.database, [Copy(OTHER, DAYS[0], "Introduced"), Copy(MARYLAND, STAMPS[0], "Passed")])
 
@@ -518,6 +593,9 @@ def test_a_batch_out_of_order_fails(old_table) -> None:
 
     with pytest.raises(RuntimeError, match="out of order"):
         old_table.connection.call("select bill_action_cleanup.copy_batch(5, 10)")
+
+    with pytest.raises(RuntimeError, match="out of order"):
+        old_table.connection.call("select bill_action_cleanup.copy_batch(0, 0)")
 
     old_table.connection.call("select bill_action_cleanup.copy_batch(0, 10)")
     with pytest.raises(RuntimeError, match="out of order"):

@@ -31,6 +31,7 @@ psql on PATH.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import subprocess
@@ -51,6 +52,9 @@ create unique index concurrently bill_actions_bill_id_fingerprint_key
   on bills.bill_actions (bill_id, fingerprint);
 alter table bills.bill_actions add constraint bill_actions_bill_id_fingerprint_key
   unique using index bill_actions_bill_id_fingerprint_key;
+-- Then, unless you mean to try the cleanup again, remove its schemas:
+--   drop schema bill_action_cleanup cascade;
+--   drop schema bill_action_cleanup_old;
 """
 
 
@@ -84,6 +88,8 @@ class ManagementApi(Database):
                 rows = json.load(response)
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"{error.code}: {error.read().decode()[:2000]}") from error
+        except http.client.HTTPException as error:
+            raise RuntimeError(f"the reply broke off: {error}") from error
         if not rows:
             return ""
         value = next(iter(rows[0].values()))
