@@ -19,8 +19,8 @@
 --              bill page reads through idx_actions_bill_occurred, so reads carry
 --              on as they are. Creates the new table in this file's own schema,
 --              where no API role can reach it.
---   copy       Reads the old table in heap order, a few thousand pages at a time,
---              and adds each action the new table doesn't hold yet. Each batch
+--   copy       Reads the old table in heap order, 1,000 pages at a time unless told
+--              otherwise, and adds each action the new table doesn't hold yet. Each batch
 --              commits with its place in the ledger, so a stop loses nothing and
 --              a rerun picks up where it stopped.
 --   build      Adds the remaining indexes and the foreign key to the new table,

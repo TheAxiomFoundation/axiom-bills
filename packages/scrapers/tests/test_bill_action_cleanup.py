@@ -7,9 +7,10 @@ They check that:
 
 - the SQL fingerprint matches db.action_fingerprint, in any session zone;
 - the kept rows match a model worked out without SQL: one row per action, the
-  earliest stored time, the last stored metadata, and one row per Maryland text
+  earliest stored time, the last copy's metadata, and one row per Maryland text
   for the feed's snapshot times, whatever the batch size;
 - a stop anywhere loses nothing, and a batch out of order fails;
+- the driver reads each kind of reply the real Management API gives;
 - the old table refuses every write from prepare on, and API roles read it as
   before and can't reach the cleanup's schemas;
 - after the swap, the table's columns, constraints, indexes, policies and grants
@@ -26,11 +27,14 @@ import importlib.util
 import json
 import re
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import ClassVar
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -923,6 +927,92 @@ def test_finish_leaves_only_the_new_table(old_table) -> None:
     # Bills delete again, with their actions.
     old_table.database.run(f"delete from bills.bills where id = '{OTHER}'")
     assert old_table.actions() == []
+
+
+# --- The Management API --------------------------------------------------------
+
+BREAKS_OFF = "[{"
+
+
+class _RecordedApi(BaseHTTPRequestHandler):
+    """Replies in the shapes the real Management API gave on 6 November 2026."""
+
+    replies: ClassVar[dict[str, list[tuple[int, str]]]] = {}
+    tokens: ClassVar[list[str]] = []
+
+    def do_POST(self) -> None:
+        sql = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["query"]
+        self.tokens.append(self.headers["Authorization"])
+        status, reply = self.replies[sql].pop(0)
+        body = reply.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body) + (10 if reply == BREAKS_OFF else 0)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_: object) -> None:
+        pass
+
+
+@pytest.fixture
+def api() -> Iterator[Callable[[dict], driver.ManagementApi]]:
+    recorded = ThreadingHTTPServer(("127.0.0.1", 0), _RecordedApi)
+    Thread(target=recorded.serve_forever, daemon=True).start()
+
+    def answering(replies: dict) -> driver.ManagementApi:
+        _RecordedApi.replies = {sql: list(answers) for sql, answers in replies.items()}
+        connection = driver.ManagementApi("a-project", "a-token")
+        connection.url = f"http://127.0.0.1:{recorded.server_port}/"
+        return connection
+
+    yield answering
+    recorded.shutdown()
+    recorded.server_close()
+
+
+def test_the_driver_reads_each_kind_of_reply_the_api_gives(api) -> None:
+    connection = api({
+        "an object": [(201, '[{"status": {"prepared": true}}]')],
+        "a list": [(201, '[{"to_jsonb": []}]')],
+        "a string": [(201, '[{"build_next": "bill_actions_pkey"}]')],
+        "a null": [(201, '[{"build_next": null}]')],
+        "no rows": [(201, "[]")],
+    })
+
+    assert connection.call("an object") == {"prepared": True}
+    assert connection.call("a list") == []
+    assert connection.run("a string") == "bill_actions_pkey"
+    assert connection.run("a null") == ""
+    assert connection.run("no rows") == ""
+    assert set(_RecordedApi.tokens) == {"Bearer a-token"}
+
+
+def test_build_through_the_api_stops_when_nothing_is_left(api) -> None:
+    connection = api({
+        "select bill_action_cleanup.build_next()": [
+            (201, '[{"build_next": "bill_actions_pkey"}]'),
+            (201, '[{"build_next": "statistics"}]'),
+            (201, '[{"build_next": null}]'),
+        ],
+        "select bill_action_cleanup.status()": [(201, '[{"status": {"built": true}}]')],
+    })
+    said: list[str] = []
+
+    assert driver.run_step(connection, "build", say=said.append) == {"built": True}
+    assert said == ["built bill_actions_pkey", "built statistics"]
+
+
+def test_an_api_failure_raises_what_the_walk_retries(api) -> None:
+    connection = api({
+        "refused": [(400, '{"message": "Failed to run sql query: ERROR: 3F000: schema does not exist"}')],
+        "broken": [(201, BREAKS_OFF)],
+    })
+
+    with pytest.raises(RuntimeError, match="400.*schema does not exist"):
+        connection.run("refused")
+    with pytest.raises(RuntimeError, match="broke off"):
+        connection.run("broken")
 
 
 # --- The migration -------------------------------------------------------------
