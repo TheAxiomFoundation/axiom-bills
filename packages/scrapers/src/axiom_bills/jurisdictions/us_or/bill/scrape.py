@@ -154,12 +154,13 @@ def parse_measure(
     actions = [_parse_action(action, bill_number) for action in action_rows]
     actions = [action for action in actions if action is not None]
     if row.get("CurrentLocation"):
-        when = _parse_datetime(row.get("ModifiedDate")) or datetime.now(tz=PT)
+        modified = _parse_datetime(row.get("ModifiedDate"))
         actions.append(BillAction(
-            occurred_at=when,
+            occurred_at=modified or datetime.now(tz=PT),
             chamber=_chamber_for_number(bill_number),
             action_text=str(row["CurrentLocation"]),
             normalized_status=match_first(str(row["CurrentLocation"]), PATTERNS),
+            undated=modified is None,
         ))
 
     return Bill(

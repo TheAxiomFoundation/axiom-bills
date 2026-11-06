@@ -90,6 +90,11 @@ class BillAction(BaseModel):
     action_text: str
     normalized_status: NormalizedStatus | None = None
     source_url: str | None = None
+    # The source gives this action no date of its own, so occurred_at only says
+    # when a scrape saw it: a feed's snapshot time, or the clock. Every scrape
+    # brings a new occurred_at, so these actions go by their text alone, and the
+    # stored row keeps the first date seen. See db.action_fingerprint.
+    undated: bool = False
 
 
 class BillVersion(BaseModel):

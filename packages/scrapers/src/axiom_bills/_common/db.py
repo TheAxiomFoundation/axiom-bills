@@ -18,9 +18,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from typing import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import Bill, BillAction, NormalizedStatus, ScrapeResult, Session, STATUS_ORDER
+
+# Fingerprint prefixes. Rows from before these schemes hold a bare hash of a
+# random local bill id, the time and the text, which no later run reproduces.
+ACTION_SCHEME = "a1:"
+UNDATED_ACTION_SCHEME = "u1:"
 
 
 def _default_db_path() -> str:
@@ -54,12 +59,38 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
-def _fingerprint(bill_id: str, action: BillAction) -> str:
-    h = hashlib.sha256()
-    h.update(bill_id.encode())
-    h.update(action.occurred_at.isoformat().encode())
-    h.update(action.action_text.encode())
-    return h.hexdigest()
+def action_instant(occurred_at: datetime) -> datetime:
+    """An action's moment in UTC.
+
+    A time with no zone counts as UTC, which is how Postgres reads it in
+    bills.bill_actions: the project's time zone is UTC.
+    """
+    if occurred_at.tzinfo is None:
+        return occurred_at.replace(tzinfo=timezone.utc)
+    return occurred_at.astimezone(timezone.utc)
+
+
+def action_fingerprint(occurred_at: datetime, action_text: str, *,
+                       undated: bool = False) -> str:
+    """What identifies an action on its bill, in every scrape of that bill.
+
+    The unique key is (bill_id, fingerprint), so the hash leaves the bill out.
+    It has to: every CI run starts from an empty SQLite that gives each bill a
+    new random id, and a hash of that id never matches a later run's.
+
+    An action counts as the same when it has the same moment and text. Chamber,
+    status and source URL stay out, because a scraper fix can change those on an
+    action that already happened. An undated action goes by its text alone (see
+    BillAction.undated).
+    """
+    if undated:
+        return UNDATED_ACTION_SCHEME + hashlib.sha256(action_text.encode()).hexdigest()
+    moment = action_instant(occurred_at).replace(tzinfo=None).isoformat(timespec="microseconds")
+    return ACTION_SCHEME + hashlib.sha256(f"{moment}\n{action_text}".encode()).hexdigest()
+
+
+def is_undated_fingerprint(fingerprint: str) -> bool:
+    return fingerprint.startswith(UNDATED_ACTION_SCHEME)
 
 
 def write_streaming(jurisdiction: str, session: Session, bills_iter: Iterator[Bill],
@@ -276,7 +307,8 @@ def _insert_actions(
         return 0
     inserted = 0
     for action in actions:
-        fp = _fingerprint(bill_id, action)
+        fp = action_fingerprint(action.occurred_at, action.action_text,
+                                undated=action.undated)
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO bill_actions
