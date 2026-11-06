@@ -2,8 +2,9 @@
 
 Docs: https://legislation.nysenate.gov/static/docs/html/
 
-Auth: free API key at https://legislation.nysenate.gov/. Limits are
-generous; we keep min-interval to 0.5s to be polite.
+Auth: free API key at https://legislation.nysenate.gov/. From December 1,
+2026 the API allows each key 10 requests a second and 4 in progress at once.
+We send one request at a time, at most two a second.
 
 NY uses biennial sessions: '2025-2026'. The session_year used in the API
 is the odd starting year (2025 for the 2025-2026 session). Bill IDs in
@@ -91,7 +92,6 @@ class NewYorkScraper(BillScraper):
                 "key": self.api_key,
                 "limit": page_size,
                 "offset": offset,
-                "full": "false",
                 "sort": "publishedDateTime:desc",
             }
             payload = self.http.get_json(url, params=params)
