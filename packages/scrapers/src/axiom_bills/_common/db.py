@@ -20,7 +20,15 @@ from pathlib import Path
 from typing import Iterator
 from datetime import datetime
 
-from .models import Bill, BillAction, NormalizedStatus, ScrapeResult, Session, STATUS_ORDER
+from .models import (
+    Bill,
+    BillAction,
+    NormalizedStatus,
+    RefreshState,
+    ScrapeResult,
+    Session,
+    STATUS_ORDER,
+)
 
 
 def _default_db_path() -> str:
@@ -84,27 +92,43 @@ def write_streaming(jurisdiction: str, session: Session, bills_iter: Iterator[Bi
             (run_id, jurisdiction),
         )
 
-    for bill in bills_iter:
+    try:
+        for bill in bills_iter:
+            with connect(db_path) as conn:
+                bill_id, is_new = _upsert_bill(conn, bill, session_id)
+                if is_new:
+                    counts["bills_new"] += 1
+                counts["actions_new"] += _insert_actions(conn, bill_id, bill.actions)
+                _upsert_versions(conn, bill_id, bill.versions)
+                _refresh_current_status(conn, bill_id)
+                counts["bills_seen"] += 1
+                # Periodically flush running totals onto scrape_runs so an
+                # observer (or interrupted shell) can see progress mid-run.
+                if counts["bills_seen"] % 25 == 0:
+                    conn.execute(
+                        """
+                        UPDATE scrape_runs
+                           SET bills_seen=?, bills_new=?, actions_new=?
+                         WHERE id=?
+                        """,
+                        (counts["bills_seen"], counts["bills_new"],
+                         counts["actions_new"], run_id),
+                    )
+    except Exception as error:
+        # Record the failure, so that last_successful_scrape never counts this
+        # run, then let the caller decide what to do about it.
         with connect(db_path) as conn:
-            bill_id, is_new = _upsert_bill(conn, bill, session_id)
-            if is_new:
-                counts["bills_new"] += 1
-            counts["actions_new"] += _insert_actions(conn, bill_id, bill.actions)
-            _upsert_versions(conn, bill_id, bill.versions)
-            _refresh_current_status(conn, bill_id)
-            counts["bills_seen"] += 1
-            # Periodically flush running totals onto scrape_runs so an
-            # observer (or interrupted shell) can see progress mid-run.
-            if counts["bills_seen"] % 25 == 0:
-                conn.execute(
-                    """
-                    UPDATE scrape_runs
-                       SET bills_seen=?, bills_new=?, actions_new=?
-                     WHERE id=?
-                    """,
-                    (counts["bills_seen"], counts["bills_new"],
-                     counts["actions_new"], run_id),
-                )
+            conn.execute(
+                """
+                UPDATE scrape_runs
+                   SET finished_at=datetime('now'), error=?,
+                       bills_seen=?, bills_new=?, actions_new=?
+                 WHERE id=?
+                """,
+                (f"{type(error).__name__}: {error}"[:1000], counts["bills_seen"],
+                 counts["bills_new"], counts["actions_new"], run_id),
+            )
+        raise
 
     # Final flush + finished_at stamp.
     with connect(db_path) as conn:
@@ -345,4 +369,42 @@ def _refresh_current_status(conn: sqlite3.Connection, bill_id: str) -> None:
         conn.execute(
             "UPDATE bills SET current_status = ?, current_status_at = ? WHERE id = ?",
             (best[0], best[1], bill_id),
+        )
+
+
+def refresh_states(jurisdiction: str, db_path: str = DEFAULT_DB) -> dict[str, RefreshState]:
+    """One jurisdiction's saved refresh state, by session name."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT session_name, feed_cursor, pending FROM refresh_state WHERE jurisdiction = ?",
+            (jurisdiction,),
+        ).fetchall()
+    return {
+        row["session_name"]: RefreshState(
+            feed_cursor=row["feed_cursor"], pending=json.loads(row["pending"])
+        )
+        for row in rows
+    }
+
+
+def read_refresh_state(
+    jurisdiction: str, session_name: str, db_path: str = DEFAULT_DB
+) -> RefreshState | None:
+    return refresh_states(jurisdiction, db_path).get(session_name)
+
+
+def write_refresh_state(
+    jurisdiction: str, session_name: str, state: RefreshState, db_path: str = DEFAULT_DB
+) -> None:
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO refresh_state (jurisdiction, session_name, feed_cursor, pending)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (jurisdiction, session_name) DO UPDATE
+               SET feed_cursor = excluded.feed_cursor,
+                   pending     = excluded.pending,
+                   updated_at  = datetime('now')
+            """,
+            (jurisdiction, session_name, state.feed_cursor, json.dumps(state.pending)),
         )

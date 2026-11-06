@@ -13,12 +13,14 @@ from zoneinfo import ZoneInfo
 
 import click
 
-from ._common.base import BillScraper
+from ._common.base import BillScraper, ScrapeFailed
 from ._common.db import (
     DEFAULT_DB,
     connect,
     last_successful_scrape,
+    read_refresh_state,
     write,
+    write_refresh_state,
     write_streaming,
 )
 from ._common.models import NormalizedStatus, STATUS_ORDER
@@ -231,6 +233,10 @@ from .jurisdictions.us_wy.bill.scrape import WyomingScraper
 from .jurisdictions.us_wy.bill.status import PATTERNS as WY_PATTERNS
 from .jurisdictions.us_wy.bill.kind import classify as classify_us_wy
 from .jurisdictions.us_wy.bill.citations import extract as extract_us_wy
+
+# Exit codes for a scrape that leaves bills worth syncing and a saved place behind.
+EXIT_BILLS_FAILED = 3
+EXIT_OUT_OF_TIME = 4
 
 REGISTRY: dict[str, type[BillScraper]] = {
     "us":    FederalScraper,
@@ -488,11 +494,24 @@ def list_jurisdictions() -> None:
               help="Federal-only: only scrape bills updated at or after this ISO timestamp.")
 @click.option("--dry-run", is_flag=True,
               help="Scrape but do not write to Postgres.")
+@click.option("--time-budget-minutes", type=click.FloatRange(min=0, min_open=True), default=None,
+              help="New York only: stop fetching bills after this long and save the "
+                   f"rest for the next run. Exits {EXIT_OUT_OF_TIME} if bills remain.")
 def scrape(jurisdiction: str, limit: int | None, congress: int | None,
-           bill: tuple[str, ...], since: str | None, dry_run: bool) -> None:
-    """Run a scraper end-to-end."""
+           bill: tuple[str, ...], since: str | None, dry_run: bool,
+           time_budget_minutes: float | None) -> None:
+    """Run a scraper end-to-end.
+
+    A scraper that keeps refresh state can exit with two more codes, and leaves
+    bills worth syncing and a saved place behind in both: 3 when some bills
+    failed, and 4 when the time budget ran out with bills left to fetch.
+    """
     cls = REGISTRY[jurisdiction]
+    if time_budget_minutes is not None and not cls.supports_refresh_state:
+        raise click.UsageError(f"{jurisdiction} doesn't support --time-budget-minutes.")
     kwargs: dict = {"limit": limit}
+    if time_budget_minutes is not None:
+        kwargs["time_budget"] = time_budget_minutes * 60
     if congress is not None and jurisdiction == "us":
         kwargs["congress"] = congress
     if bill and jurisdiction == "us":
@@ -509,32 +528,55 @@ def scrape(jurisdiction: str, limit: int | None, congress: int | None,
             kwargs["since"] = since
             click.echo(f"Refresh since {since.isoformat()} (set --bill to bypass).")
     scraper = cls(**kwargs)
+    # A --limit run is a smoke test: it starts from nothing and saves nothing.
+    keeps_state = cls.supports_refresh_state and limit is None
+    if keeps_state:
+        scraper.refresh_state = read_refresh_state(
+            jurisdiction, scraper.session().name, DEFAULT_DB
+        )
 
     if dry_run:
-        bills = list(scraper.bills_iter()) if hasattr(scraper, "bills_iter") \
-                else scraper.scrape().bills
-        scraper.close()
+        try:
+            bills = list(scraper.bills_iter()) if hasattr(scraper, "bills_iter") \
+                    else scraper.scrape().bills
+        except ScrapeFailed as failure:
+            raise click.ClickException(str(failure)) from None
+        finally:
+            scraper.close()
         click.echo(f"Dry run: {len(bills)} bills (not writing).")
         return
 
+    failure: ScrapeFailed | None = None
     try:
-        # Federal scraper streams bills one at a time and we commit per
-        # bill so a network blip can't lose 6500-bill of work. Other
-        # jurisdictions still use the bulk path.
+        # Federal and New York scrapers stream bills one at a time and we
+        # commit per bill so a network blip can't lose 6500-bill of work.
+        # Other jurisdictions still use the bulk path.
         if hasattr(scraper, "bills_iter") and hasattr(scraper, "session"):
             counts = write_streaming(
-                jurisdiction, scraper.session(), scraper.bills_iter()
+                jurisdiction, scraper.session(), scraper.bills_iter(), db_path=DEFAULT_DB
             )
         else:
             result = scraper.scrape()
             counts = write(result)
+    except ScrapeFailed as error:
+        failure = error
     finally:
         scraper.close()
+
+    state = scraper.next_refresh_state() if keeps_state else None
+    if state is not None:
+        write_refresh_state(jurisdiction, scraper.session().name, state, DEFAULT_DB)
+    if failure is not None:
+        click.echo(f"Scrape failed: {failure}", err=True)
+        raise SystemExit(EXIT_BILLS_FAILED if state is not None else 1)
 
     click.echo(
         f"Wrote: bills_seen={counts['bills_seen']} "
         f"bills_new={counts['bills_new']} actions_new={counts['actions_new']}"
     )
+    if keeps_state and scraper.out_of_time:
+        click.echo(f"The time budget ran out. Bills still pending: {len(state.pending)}.", err=True)
+        raise SystemExit(EXIT_OUT_OF_TIME)
 
 
 def _parse_since_cursor(value: str) -> datetime:
@@ -752,6 +794,42 @@ def trigger_encodes(jurisdiction: str | None, run_queue: bool,
         run_counts = run_pending(jurisdiction=jurisdiction, limit=limit)
         for k, v in sorted(run_counts.items()):
             click.echo(f"  {k:<20} {v}")
+
+
+@main.command(name="hydrate-refresh-state")
+@click.option(
+    "--jurisdiction", "-j", required=True,
+    type=click.Choice(list(REGISTRY)),
+    help="Jurisdiction whose saved state to copy down.",
+)
+def hydrate_refresh_state(jurisdiction: str) -> None:
+    """Copy a jurisdiction's refresh state from Supabase into local SQLite.
+
+    Run before `scrape` when working from a fresh database (CI does this every
+    run), so the scrape picks up where the last one stopped instead of starting
+    a full load. Requires SUPABASE_URL and SUPABASE_SERVICE_KEY.
+    """
+    from ._common.supabase_sync import hydrate_refresh_state as hydrate
+    counts = hydrate(DEFAULT_DB, jurisdiction)
+    click.echo(f"  sessions {counts['sessions']}")
+
+
+@main.command(name="push-refresh-state")
+@click.option(
+    "--jurisdiction", "-j", required=True,
+    type=click.Choice(list(REGISTRY)),
+    help="Jurisdiction whose state to save.",
+)
+def push_refresh_state(jurisdiction: str) -> None:
+    """Save a jurisdiction's refresh state from local SQLite to Supabase.
+
+    Run after `sync-supabase` succeeds: the saved state tells the next run that
+    every bill it doesn't list has reached Supabase. Requires SUPABASE_URL and
+    SUPABASE_SERVICE_KEY.
+    """
+    from ._common.supabase_sync import push_refresh_state as push
+    counts = push(DEFAULT_DB, jurisdiction)
+    click.echo(f"  sessions {counts['sessions']}")
 
 
 @main.command(name="hydrate-reconciliations")

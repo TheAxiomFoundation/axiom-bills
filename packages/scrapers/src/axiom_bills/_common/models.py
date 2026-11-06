@@ -133,3 +133,13 @@ class ScrapeResult(BaseModel):
     session: Session
     bills: list[Bill]
     notes: dict[str, Any] = Field(default_factory=dict)
+
+
+class RefreshState(BaseModel):
+    """Where a refresh that follows an update feed stands for one session.
+
+    Every change the feed listed before feed_cursor has reached the database,
+    apart from the bills in pending, which the next run fetches.
+    """
+    feed_cursor: str              # a time, in the feed's own format
+    pending: list[str] = Field(default_factory=list)
