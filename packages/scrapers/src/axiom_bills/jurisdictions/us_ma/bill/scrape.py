@@ -90,11 +90,13 @@ def parse_bill(detail: dict, action_rows: list[dict], *, summary: dict, session:
     title = _clean_text(_get(detail, "Title") or _get(summary, "Title")) or number
     actions = _actions(action_rows, number)
     if not actions:
+        filed_at = _filed_at(detail, summary, session)
         actions.append(BillAction(
-            occurred_at=_filed_at(detail, summary, session),
+            occurred_at=filed_at or datetime.now(),
             chamber=_chamber_for_number(number),
             action_text="Filed",
             normalized_status=match_first("Filed", PATTERNS),
+            undated=filed_at is None,
         ))
     return Bill(
         jurisdiction=MassachusettsScraper.jurisdiction,
@@ -185,7 +187,7 @@ def _versions(detail: dict, number: str) -> list[BillVersion]:
     return versions
 
 
-def _filed_at(detail: dict, summary: dict, session: Session) -> datetime:
+def _filed_at(detail: dict, summary: dict, session: Session) -> datetime | None:
     primary = _get(detail, "PrimarySponsor") or _get(summary, "PrimarySponsor")
     if isinstance(primary, dict):
         response_date = _parse_datetime(_get(primary, "ResponseDate"))
@@ -193,7 +195,7 @@ def _filed_at(detail: dict, summary: dict, session: Session) -> datetime:
             return response_date
     if session.start_date is not None:
         return datetime.combine(session.start_date, time.min)
-    return datetime.now()
+    return None
 
 
 def _chamber(raw: str | None) -> Chamber | None:

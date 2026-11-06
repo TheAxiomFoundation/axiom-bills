@@ -21,11 +21,19 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import httpx
 
+from .db import (
+    ACTION_SCHEME,
+    UNDATED_ACTION_SCHEME,
+    action_fingerprint,
+    action_instant,
+    is_undated_fingerprint,
+)
 from .section_preservation import (
     has_corpus_miss,
     preserve_stored_sections,
@@ -128,6 +136,7 @@ def _remote_rows_by_in(
     column: str,
     values: Iterable[str],
     chunk: int = 100,
+    tiebreak: str = "id",
 ) -> list[dict]:
     unique_values = sorted({value for value in values if value})
     rows: list[dict] = []
@@ -147,7 +156,7 @@ def _remote_rows_by_in(
                 # planner onto the index that already covers it
                 # (e.g. idx_actions_bill_occurred on bill_actions(bill_id,...)),
                 # so it probes just the matching rows.
-                "order": f"{column}.asc,id.asc",
+                "order": f"{column}.asc,{tiebreak}.asc",
             },
         ))
     return rows
@@ -339,6 +348,156 @@ def _remote_child_ids(
     }
 
 
+# Each remote read covers this many bills. Before the cleanup one bill can hold
+# thousands of copies, and a deep Range page has to walk past all of them.
+_ACTION_BILLS_PER_READ = 20
+_ACTION_METADATA = ("chamber", "normalized_status", "source_url")
+
+
+def _bill_key(bill_id: str) -> str:
+    """One spelling of a bill id: SQLite holds hex, Postgres returns dashes."""
+    return bill_id.replace("-", "").lower()
+
+
+def _instant(value: str) -> datetime:
+    return action_instant(datetime.fromisoformat(value))
+
+
+def _copy_rank(row: dict) -> tuple:
+    """Sort key for the copy that stands for an action held in several rows.
+
+    A row on a current scheme comes first, then the latest ingest. The
+    fingerprint breaks ties, so the order the rows arrive in can't change which
+    row gets written.
+    """
+    return (
+        not row["fingerprint"].startswith((ACTION_SCHEME, UNDATED_ACTION_SCHEME)),
+        -_instant(row["ingested_at"]).timestamp(),
+        row["fingerprint"],
+    )
+
+
+def _undated_rank(row: dict) -> tuple:
+    """Sort key for the row that stands for an undated action: the first date seen."""
+    return (
+        not is_undated_fingerprint(row["fingerprint"]),
+        _instant(row["occurred_at"]),
+        *_copy_rank(row),
+    )
+
+
+def _action_write(local: dict, target: dict | None, *, occurred_at: datetime,
+                  undated: bool) -> dict | None:
+    """The upsert that brings one action up to date, or None if it already is.
+
+    The payload leaves out id and ingested_at. A new row takes their defaults,
+    and an existing row keeps its own, so ingested_at still says when we first
+    stored the action. A write to an existing row reuses that row's fingerprint
+    and date, so it updates the row in place.
+    """
+    if target is not None and all(local[c] == target[c] for c in _ACTION_METADATA):
+        return None
+    return {
+        "bill_id": local["bill_id"],
+        "occurred_at": target["occurred_at"] if target else occurred_at.isoformat(),
+        "chamber": local["chamber"],
+        "action_text": local["action_text"],
+        "normalized_status": local["normalized_status"],
+        "source_url": local["source_url"],
+        "fingerprint": (target["fingerprint"] if target else action_fingerprint(
+            occurred_at, local["action_text"], undated=undated)),
+    }
+
+
+def _action_changes(local_rows: list[dict], remote_rows: list[dict]) -> list[dict]:
+    """The upserts that make the remote rows hold every local action.
+
+    ``local_rows`` carry remote bill ids, and ``remote_rows`` hold everything
+    stored for those bills. These hold for any input:
+
+    - A repeat sync writes nothing: applying the result and asking again returns
+      an empty list.
+    - Every distinct local action ends up with a remote row.
+    - An action the remote table already holds, in any number of copies and under
+      any fingerprint, gains no row.
+    - No existing row changes its date, text, fingerprint, id or ingested_at.
+
+    Actions match on bill, moment and text, not on the stored fingerprint, so
+    this holds before and after the cleanup removes the old copies. An undated
+    action matches on bill and text, and its row keeps the earliest date. When a
+    scrape also gives that text a real date, the dated action speaks for it.
+    """
+    copies_of_event: dict[tuple, list[dict]] = {}
+    copies_of_text: dict[tuple, list[dict]] = {}
+    for row in remote_rows:
+        bill, text = _bill_key(row["bill_id"]), row["action_text"]
+        copies_of_event.setdefault((bill, _instant(row["occurred_at"]), text), []).append(row)
+        copies_of_text.setdefault((bill, text), []).append(row)
+
+    # One local row per action. A database that outlived an old fingerprint can
+    # hold two, and both name the same event.
+    dated: dict[tuple, dict] = {}
+    undated: dict[tuple, dict] = {}
+    for row in local_rows:
+        bill, text = _bill_key(row["bill_id"]), row["action_text"]
+        if is_undated_fingerprint(row["fingerprint"]):
+            undated[bill, text] = row
+        else:
+            dated[bill, _instant(row["occurred_at"]), text] = row
+
+    writes: list[dict | None] = []
+    for event, row in dated.items():
+        copies = copies_of_event.get(event)
+        target = min(copies, key=_copy_rank) if copies else None
+        writes.append(_action_write(row, target, occurred_at=event[1], undated=False))
+    dated_texts = {(bill, text) for bill, _, text in dated}
+    for key, row in undated.items():
+        if key in dated_texts:
+            continue
+        copies = copies_of_text.get(key)
+        target = min(copies, key=_undated_rank) if copies else None
+        writes.append(_action_write(row, target, occurred_at=_instant(row["occurred_at"]),
+                                    undated=True))
+    return [write for write in writes if write is not None]
+
+
+def _sync_actions(client: httpx.Client, local: sqlite3.Connection,
+                  bill_id_map: dict[str, str]) -> int:
+    """Push local actions to bills.bill_actions, a few bills at a time.
+
+    Each read pulls only the stored rows of the bills in hand, so memory stays
+    bounded by the largest bills, and a repeat sync writes no row at all.
+    Returns the number of rows written.
+    """
+    by_bill: dict[str, list[dict]] = {}
+    for r in local.execute("""
+        SELECT bill_id, occurred_at, chamber, action_text,
+               normalized_status, source_url, fingerprint
+          FROM bill_actions
+    """):
+        row = dict(r)
+        row["bill_id"] = bill_id_map.get(row["bill_id"], row["bill_id"])
+        by_bill.setdefault(row["bill_id"], []).append(row)
+
+    written = 0
+    for bill_ids in _chunks(sorted(by_bill), _ACTION_BILLS_PER_READ):
+        remote_rows = _remote_rows_by_in(
+            client,
+            "bill_actions",
+            select=("bill_id,occurred_at,chamber,action_text,normalized_status,"
+                    "source_url,fingerprint,ingested_at"),
+            column="bill_id",
+            values=bill_ids,
+            tiebreak="fingerprint",
+        )
+        local_rows = [row for bill_id in bill_ids for row in by_bill[bill_id]]
+        written += _upsert(
+            client, "bill_actions", _action_changes(local_rows, remote_rows),
+            on_conflict="bill_id,fingerprint",
+        )
+    return written
+
+
 def _stored_diffs_by_bill(
     client: httpx.Client, remote_bill_ids: Iterable[str],
 ) -> dict[str, dict]:
@@ -501,35 +660,7 @@ def sync(db_path: str) -> dict[str, int]:
         )
 
         # 4. Bill actions
-        rows = []
-        for r in local.execute("""
-            SELECT id, bill_id, occurred_at, chamber, action_text,
-                   normalized_status, source_url, fingerprint, ingested_at
-              FROM bill_actions
-        """):
-            rows.append({
-                "id": r["id"],
-                "bill_id": bill_id_map.get(r["bill_id"], r["bill_id"]),
-                "occurred_at": r["occurred_at"],
-                "chamber": r["chamber"],
-                "action_text": r["action_text"],
-                "normalized_status": r["normalized_status"],
-                "source_url": r["source_url"],
-                "fingerprint": r["fingerprint"],
-                "ingested_at": r["ingested_at"],
-            })
-        child_id_map = _remote_child_ids(
-            client,
-            "bill_actions",
-            rows=rows,
-            select="fingerprint",
-            key_columns=("fingerprint",),
-        )
-        for row in rows:
-            row["id"] = child_id_map[row["id"]]
-        counts["bill_actions"] = _upsert(
-            client, "bill_actions", rows, on_conflict="bill_id,fingerprint"
-        )
+        counts["bill_actions"] = _sync_actions(client, local, bill_id_map)
 
         # 5. Bill versions
         rows = []

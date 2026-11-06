@@ -78,6 +78,7 @@ def parse_feed_item(item: dict, session_name: str) -> Bill | None:
             chamber=_chamber_for_number(number),
             action_text=text,
             normalized_status=status,
+            undated=when is None,
         )
         for status, text, when in item.get("Actions", [])
     ]

@@ -3,10 +3,14 @@
 Maryland publishes an hourly open legislative data JSON file for each
 regular session. It includes bill metadata, current status, subjects,
 sponsors, and enough dated milestones to build a useful action history.
+
+The file gives no date for the current status or for passage by the General
+Assembly. Its StatusCurrentAsOf is one time for the whole file, which moves
+each time the state writes the file, so those two actions count as undated.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from axiom_bills._common.base import BillScraper
@@ -72,6 +76,7 @@ def parse_bill(row: dict, session_name: str, session_year: int) -> Bill | None:
             chamber=_chamber_for_number(number),
             action_text=status,
             normalized_status=match_first(status, PATTERNS),
+            undated=True,
         ))
 
     return Bill(
@@ -139,6 +144,7 @@ def _actions(row: dict, status: str, status_at: datetime) -> list[BillAction]:
             chamber=chamber,
             action_text="Passed by the General Assembly",
             normalized_status=NormalizedStatus.ENROLLED,
+            undated=True,
         ))
     return actions
 
@@ -147,7 +153,14 @@ def _parse_datetime(raw) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(ET)
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        # The feed's times carry no zone, and astimezone would read them in the
+        # machine's. The refresh runs on UTC machines, so every stored Maryland
+        # action reads them as UTC. An action's identity includes its moment, so
+        # any other reading would store each dated action again.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ET)
     except ValueError:
         try:
             return datetime.fromisoformat(str(raw)).replace(tzinfo=ET)

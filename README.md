@@ -155,6 +155,23 @@ migrations and test each role's access. They need `psql` on `PATH` and
 or later. Without the URL they skip, except when `CI` is set, where they fail.
 CI runs them on `postgres:17`.
 
+`bills.bill_actions` holds one row per action on a bill: the same moment and
+text, or the same text where the source gives no date. The sync writes only the
+differences, so a repeat sync writes nothing and a stored row keeps the time we
+first stored it. `packages/scrapers/tests/test_bill_action_identity.py` states
+these rules as properties. `test_bill_action_postgrest.py` and two tests in
+`test_bill_action_cleanup.py` check them on whole syncs through real PostgREST,
+and also need `AXIOM_BILLS_TEST_POSTGREST` set to the PostgREST binary. Without
+it they skip, except when `CI` is set, where they fail. CI downloads PostgREST
+v14.18.
+
+Refreshes before November 2026 stored another copy of every action on each run.
+`supabase/manual/bill_action_cleanup.py` removes those copies from a
+database that holds them: it builds a new table in batches, checks it and swaps
+it in, with a way back at each step. Migrations don't run it, and its docstring
+lists the commands. Run it before re-enabling the refresh crons, because reading
+the old copies is what timed those out.
+
 The FastAPI service in `packages/api/` is kept for local development
 convenience (the dev proxy was removed). Production no longer runs it.
 
