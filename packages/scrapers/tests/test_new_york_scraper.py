@@ -36,7 +36,9 @@ def _full_bill(print_no: str) -> dict:
         "amendments": {
             "items": {
                 "": {},
-                "A": {"coSponsors": {"items": [{"fullName": "Tony Avella"}], "size": 1}},
+                "A": {
+                    "coSponsors": {"items": [{"fullName": "Tony Avella"}], "size": 1}
+                },
             },
             "size": 2,
         },
@@ -63,7 +65,9 @@ class FakeHttp:
         return {"result": _full_bill(url.rsplit("/", 1)[-1])}
 
     def listing_requests(self) -> list[dict]:
-        return [params for url, params in self.requests if url == f"{API_ROOT}/bills/2025"]
+        return [
+            params for url, params in self.requests if url == f"{API_ROOT}/bills/2025"
+        ]
 
 
 def _scraper(monkeypatch, fake: FakeHttp) -> NewYorkScraper:
@@ -92,7 +96,9 @@ def test_new_york_scrape_builds_each_bill_from_its_own_request(monkeypatch) -> N
     result = scraper.scrape()
 
     single_bill_requests = [
-        (url, params) for url, params in fake.requests if url != f"{API_ROOT}/bills/2025"
+        (url, params)
+        for url, params in fake.requests
+        if url != f"{API_ROOT}/bills/2025"
     ]
     assert single_bill_requests == [
         (f"{API_ROOT}/bills/2025/S1", {"key": "test-key"}),
@@ -101,9 +107,11 @@ def test_new_york_scrape_builds_each_bill_from_its_own_request(monkeypatch) -> N
     assert [bill.number for bill in result.bills] == ["S1", "A2"]
     assert [bill.chamber for bill in result.bills] == [Chamber.UPPER, Chamber.LOWER]
     assert [bill.title for bill in result.bills] == ["Title of S1", "Title of A2"]
-    assert [bill.actions[0].action_text for bill in result.bills] == [
-        "REFERRED TO FINANCE",
-        "REFERRED TO FINANCE",
+    assert [
+        [action.action_text for action in bill.actions] for bill in result.bills
+    ] == [
+        ["REFERRED TO FINANCE"],
+        ["REFERRED TO FINANCE"],
     ]
     assert [[version.label for version in bill.versions] for bill in result.bills] == [
         ["version-original", "version-A"],
