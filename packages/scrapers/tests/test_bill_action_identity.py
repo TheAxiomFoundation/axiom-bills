@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -716,7 +717,34 @@ def test_maryland_adds_nothing_when_only_the_feed_time_moves(tmp_path, rest) -> 
     assert _snapshot(rest) == before
     passed = [r for r in before if r["action_text"] == "Passed by the General Assembly"]
     assert len(passed) == 1
-    assert passed[0]["occurred_at"].startswith("2026-02-04T22:45:08.947")
+    assert datetime.fromisoformat(passed[0]["occurred_at"]) == datetime(
+        2026, 2, 4, 17, 45, 8, 947000, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_a_maryland_action_keeps_its_identity_on_any_machine(zone, monkeypatch) -> None:
+    def fingerprints() -> set[str]:
+        bill = parse_maryland(MARYLAND_ROW, "2026", 2026)
+        assert bill is not None
+        return {
+            action_fingerprint(a.occurred_at, a.action_text, undated=a.undated)
+            for a in bill.actions
+        }
+
+    expected = {
+        action_fingerprint(datetime(2026, 1, 14), "First reading"),
+        action_fingerprint(datetime(2026, 1, 20, 13), "Hearing"),
+    }
+    try:
+        with monkeypatch.context() as machine:
+            machine.setenv("TZ", zone)
+            time.tzset()
+            found = fingerprints()
+    finally:
+        time.tzset()
+
+    assert expected <= found
 
 
 @settings(max_examples=25, deadline=None)

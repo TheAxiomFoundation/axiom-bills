@@ -10,7 +10,7 @@ each time the state writes the file, so those two actions count as undated.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from axiom_bills._common.base import BillScraper
@@ -153,7 +153,14 @@ def _parse_datetime(raw) -> datetime | None:
     if not raw:
         return None
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(ET)
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        # The feed's times carry no zone, and astimezone would read them in the
+        # machine's. The refresh runs on UTC machines, so every stored Maryland
+        # action reads them as UTC. An action's identity includes its moment, so
+        # any other reading would store each dated action again.
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ET)
     except ValueError:
         try:
             return datetime.fromisoformat(str(raw)).replace(tzinfo=ET)

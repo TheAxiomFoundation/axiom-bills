@@ -254,7 +254,7 @@ def test_maryland_keeps_one_row_and_its_first_date_when_the_feed_moves(tmp_path,
     assert live_rest.actions() == stored
     assert live_rest.database.run(
         "select occurred_at from bills.bill_actions where action_text = 'Passed by the General Assembly'"
-    ) == "2026-02-04 22:45:08.947+00"
+    ) == "2026-02-04 17:45:08.947+00"
 
 
 def test_a_read_pages_past_the_row_limit(tmp_path, live_rest) -> None:
