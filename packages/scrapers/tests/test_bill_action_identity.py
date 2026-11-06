@@ -528,9 +528,9 @@ def _dashed(value):
 class FakeRest:
     """Enough of PostgREST for sync(): in.() filters, Range pages, upserts.
 
-    An upsert sets only the columns in its payload. A new row takes the column
-    defaults for the rest, as the real thing does: the live run in the pull
-    request checks that against PostgREST itself.
+    An upsert sets only the columns in its payload, and a new row takes the
+    column defaults for the rest. test_bill_action_postgrest.py checks that
+    against PostgREST itself.
     """
 
     tables: dict[str, list[dict]] = field(default_factory=dict)

@@ -31,6 +31,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      - name: Fetch PostgREST
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: postgrest-v14.18-linux-static-x86-64.tar.xz
+          SHA256: 98de1c0be7787aea5f5e11a25f303ea0077634d6fc1000b687bfa825fd27d299
+        run: |
+          gh release download v14.18 --repo PostgREST/postgrest --pattern "$ARCHIVE" --dir "$RUNNER_TEMP"
+          echo "$SHA256  $RUNNER_TEMP/$ARCHIVE" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/$ARCHIVE" -C "$RUNNER_TEMP"
+          echo "AXIOM_BILLS_TEST_POSTGREST=$RUNNER_TEMP/postgrest" >> "$GITHUB_ENV"
       - name: Run scraper tests
         env:
           AXIOM_BILLS_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
