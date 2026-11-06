@@ -4,42 +4,63 @@ from axiom_bills._common.models import Chamber
 from axiom_bills.jurisdictions.us_ny.bill.scrape import API_ROOT, NewYorkScraper
 
 # The API deprecates these on bill listings and rejects `full=true` from
-# December 1, 2026. Its notice asks clients to stop sending them.
+# December 1, 2026.
 REMOVED_LISTING_OPTIONS = {"full", "fullTextFormat"}
+
+
+def _action(print_no: str, text: str) -> dict:
+    return {
+        "date": "2025-01-08",
+        "chamber": "SENATE" if print_no.startswith("S") else "ASSEMBLY",
+        "text": text,
+    }
+
+
+def _summary(print_no: str) -> dict:
+    """A listing item: identifiers, title and actions, but no amendments."""
+    return {
+        "basePrintNo": print_no,
+        "session": 2025,
+        "printNo": f"{print_no}A",
+        "title": f"Summary title of {print_no}",
+        "activeVersion": "A",
+        "actions": {"items": [_action(print_no, "SUMMARY ACTION")], "size": 1},
+    }
+
+
+def _full_bill(print_no: str) -> dict:
+    """A single bill: the summary's fields plus amendments and their cosponsors."""
+    return {
+        **_summary(print_no),
+        "title": f"Title of {print_no}",
+        "amendments": {
+            "items": {
+                "": {},
+                "A": {"coSponsors": {"items": [{"fullName": "Tony Avella"}], "size": 1}},
+            },
+            "size": 2,
+        },
+        "actions": {"items": [_action(print_no, "REFERRED TO FINANCE")], "size": 1},
+    }
 
 
 class FakeHttp:
     """Serves listing pages and single bills, and records every request."""
 
-    def __init__(self, *, print_nos: list[str], page_size: int = 500) -> None:
+    def __init__(self, *, print_nos: list[str]) -> None:
         self.print_nos = print_nos
-        self.page_size = page_size
         self.requests: list[tuple[str, dict]] = []
 
     def get_json(self, url: str, *, params: dict) -> dict:
         self.requests.append((url, dict(params)))
         if url == f"{API_ROOT}/bills/2025":
             start = params["offset"] - 1
-            page = self.print_nos[start : start + self.page_size]
+            page = self.print_nos[start : start + params["limit"]]
             return {
                 "total": len(self.print_nos),
-                "result": {"items": [{"basePrintNo": print_no} for print_no in page]},
+                "result": {"items": [_summary(print_no) for print_no in page]},
             }
-        print_no = url.rsplit("/", 1)[-1]
-        return {
-            "result": {
-                "title": f"Title of {print_no}",
-                "actions": {
-                    "items": [
-                        {
-                            "date": "2025-01-08",
-                            "chamber": "SENATE" if print_no.startswith("S") else "ASSEMBLY",
-                            "text": "REFERRED TO FINANCE",
-                        }
-                    ]
-                },
-            }
-        }
+        return {"result": _full_bill(url.rsplit("/", 1)[-1])}
 
     def listing_requests(self) -> list[dict]:
         return [params for url, params in self.requests if url == f"{API_ROOT}/bills/2025"]
@@ -83,4 +104,12 @@ def test_new_york_scrape_builds_each_bill_from_its_own_request(monkeypatch) -> N
     assert [bill.actions[0].action_text for bill in result.bills] == [
         "REFERRED TO FINANCE",
         "REFERRED TO FINANCE",
+    ]
+    assert [[version.label for version in bill.versions] for bill in result.bills] == [
+        ["version-original", "version-A"],
+        ["version-original", "version-A"],
+    ]
+    assert [[sponsor.name for sponsor in bill.sponsors] for bill in result.bills] == [
+        ["Tony Avella"],
+        ["Tony Avella"],
     ]
