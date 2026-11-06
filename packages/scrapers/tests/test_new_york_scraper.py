@@ -17,10 +17,9 @@ from axiom_bills.jurisdictions.us_ny.bill.scrape import (
     API_ROOT,
     ET,
     FEED_MARGIN,
-    MAX_FAILURES_IN_A_ROW,
-    MAX_REMOVALS_IN_A_ROW,
     PAGE_SIZE,
     REQUEST_TIMEOUT,
+    _ApiCallFailed,
     feed_end,
     feed_start,
 )
@@ -73,6 +72,31 @@ def test_the_listing_asks_for_ids_on_every_page_and_omits_the_removed_options(mo
         # The default order suits us, and the lowercase `desc` this used to send
         # appears nowhere in the docs.
         assert "sort" not in params
+
+
+def test_the_next_page_starts_after_the_last_item_the_api_sent(monkeypatch) -> None:
+    # A page can hold fewer items than the limit, and the docs say to go by offsetEnd.
+    first_page = httpx.Response(
+        200,
+        json={
+            "success": True,
+            "total": 3,
+            "offsetEnd": 2,
+            "result": {"items": [{"basePrintNo": "S1"}, {"basePrintNo": "S2"}]},
+        },
+    )
+    second_page = httpx.Response(
+        200,
+        json={"success": True, "total": 3, "offsetEnd": 3, "result": {"items": [{"basePrintNo": "S3"}]}},
+    )
+    api = FakeOpenLeg(print_nos=["S1", "S2", "S3"], replies={BILL_LIST: [first_page, second_page]})
+    install(monkeypatch, api)
+
+    bills, failure = drain(scraper_for())
+
+    assert failure is None
+    assert [bill.number for bill in bills] == ["S1", "S2", "S3"]
+    assert [r.url.params["offset"] for r in _listing_requests(api)] == ["1", "3"]
 
 
 def test_each_bill_comes_from_its_own_request_without_its_full_text(monkeypatch) -> None:
@@ -167,6 +191,20 @@ def test_a_limit_stops_the_listing_and_the_run_early(monkeypatch) -> None:
     assert len(_listing_requests(api)) == 1
 
 
+def test_a_limit_stops_a_later_run_and_leaves_the_rest_pending(monkeypatch) -> None:
+    api = FakeOpenLeg(print_nos=["S1", "S2", "S3"])
+    install(monkeypatch, api)
+    scraper = scraper_for(limit=2)
+    scraper.refresh_state = _state("S1", "S2", "S3")
+
+    bills, failure = drain(scraper)
+
+    assert failure is None
+    assert [bill.number for bill in bills] == ["S1", "S2"]
+    assert api.bill_names() == ["S1", "S2"]
+    assert scraper.next_refresh_state().pending == ["S3"]
+
+
 # --- A list we can't read to the end fails the run ---------------------------
 
 
@@ -176,6 +214,11 @@ LIST_FAILURES = {
     "403": lambda: status(403),
     "404": lambda: status(404),
     "500": lambda: status(500),
+    "500 with a body that reads as a success": lambda: httpx.Response(
+        500,
+        json={"success": True, "total": 1, "offsetEnd": 1, "result": {"items": [{"basePrintNo": "S1"}]}},
+    ),
+    "204": lambda: httpx.Response(204),
     "not json": lambda: httpx.Response(200, text="<html>Sorry</html>"),
     "not an object": lambda: httpx.Response(200, json=[1, 2]),
     "says it failed": lambda: httpx.Response(200, json={"success": False, "result": {"items": []}}),
@@ -245,6 +288,25 @@ def test_a_listing_that_fails_on_a_later_page_fetches_no_bill(monkeypatch) -> No
 
     assert bills == []
     assert failure is not None
+    assert scraper.next_refresh_state() is None
+    assert api.bill_requests() == []
+
+
+def test_an_empty_page_before_the_end_of_a_listing_fetches_no_bill(monkeypatch) -> None:
+    first_page = httpx.Response(
+        200,
+        json={"success": True, "total": 3, "offsetEnd": 1, "result": {"items": [{"basePrintNo": "S1"}]}},
+    )
+    empty_page = httpx.Response(200, json={"success": True, "total": 3, "result": {"items": []}})
+    api = FakeOpenLeg(print_nos=["S1"], replies={BILL_LIST: [first_page, empty_page]})
+    install(monkeypatch, api)
+    scraper = scraper_for()
+
+    bills, failure = drain(scraper)
+
+    assert bills == []
+    assert failure is not None
+    assert "empty list page" in str(failure)
     assert scraper.next_refresh_state() is None
     assert api.bill_requests() == []
 
@@ -352,7 +414,14 @@ def test_a_feed_with_no_changes_succeeds_and_moves_the_cursor(monkeypatch) -> No
 
 @pytest.mark.parametrize(
     "reply",
-    [status(400, error_code=1), status(401, error_code=701), status(500), httpx.ReadTimeout],
+    [
+        status(400, error_code=1),
+        status(401, error_code=701),
+        status(500),
+        httpx.ReadTimeout,
+        httpx.Response(200, json={"success": True, "total": 5, "result": {"items": []}}),
+    ],
+    ids=["400", "401", "500", "read timeout", "empty page before the end"],
 )
 def test_a_feed_we_cant_read_fails_the_run_and_saves_nothing(monkeypatch, reply) -> None:
     api = FakeOpenLeg(print_nos=["S1"])
@@ -446,6 +515,22 @@ def test_feed_end_sits_two_minutes_back_in_new_york_time_with_no_offset() -> Non
     assert end.tzinfo is None
 
 
+@pytest.mark.parametrize(
+    "now, end",
+    [
+        # 1:01 a.m. EST, a minute after the clocks went back. Two minutes earlier
+        # read 1:59 a.m. EDT.
+        (datetime(2026, 11, 1, 6, 1, tzinfo=timezone.utc), datetime(2026, 11, 1, 1, 59)),
+        # 3:01 a.m. EDT, a minute after the clocks went forward. Two minutes earlier
+        # read 1:59 a.m. EST, and 2:59 a.m. never happened that day.
+        (datetime(2026, 3, 8, 7, 1, tzinfo=timezone.utc), datetime(2026, 3, 8, 1, 59)),
+    ],
+    ids=["clocks back", "clocks forward"],
+)
+def test_feed_end_takes_its_margin_off_real_time_across_a_clock_change(now, end) -> None:
+    assert feed_end(now) == end
+
+
 REPEATED_HOUR = datetime(2026, 11, 1, 5, 0, tzinfo=timezone.utc)  # 1 a.m. EDT
 SKIPPED_HOUR = datetime(2026, 3, 8, 7, 0, tzinfo=timezone.utc)    # 2 a.m. EST, 3 a.m. EDT
 
@@ -519,7 +604,7 @@ def test_a_client_error_stops_the_run_at_once_and_keeps_what_it_got(monkeypatch,
 
 
 def test_failures_in_a_row_stop_the_run(monkeypatch) -> None:
-    names = list(numbered("S", MAX_FAILURES_IN_A_ROW + 3))
+    names = list(numbered("S", 6))
     api = FakeOpenLeg(print_nos=names, replies={n: status(500) for n in names[1:]})
     install(monkeypatch, api)
     scraper = scraper_for()
@@ -527,27 +612,35 @@ def test_failures_in_a_row_stop_the_run(monkeypatch) -> None:
     bills, failure = drain(scraper)
 
     assert [bill.number for bill in bills] == ["S1"]
-    assert len(api.bill_requests()) == 1 + MAX_FAILURES_IN_A_ROW
+    assert api.bill_names() == ["S1", "S2", "S3", "S4"]
     assert failure is not None
-    state = scraper.next_refresh_state()
-    assert set(state.pending) == set(names[1:])
-    assert state.pending[-MAX_FAILURES_IN_A_ROW:] == names[1 : 1 + MAX_FAILURES_IN_A_ROW]
+    assert "3 bills in a row failed" in str(failure)
+    assert scraper.next_refresh_state().pending == ["S5", "S6", "S2", "S3", "S4"]
 
 
 def test_scattered_failures_dont_stop_the_run_but_still_fail_it(monkeypatch) -> None:
-    names = list(numbered("S", 7))
-    api = FakeOpenLeg(print_nos=names, replies={"S2": status(500), "S5": httpx.ReadTimeout})
+    names = list(numbered("S", 9))
+    api = FakeOpenLeg(
+        print_nos=names,
+        replies={
+            "S2": status(500),
+            "S4": httpx.ReadTimeout,
+            "S6": status(500),
+            "S8": status(500),
+        },
+    )
     install(monkeypatch, api)
     scraper = scraper_for()
 
     bills, failure = drain(scraper)
 
-    assert [bill.number for bill in bills] == ["S1", "S3", "S4", "S6", "S7"]
+    assert [bill.number for bill in bills] == ["S1", "S3", "S5", "S7", "S9"]
     assert failure is not None
-    assert "Bills that failed: 2" in str(failure)
+    assert "Bills that failed: 4" in str(failure)
     assert "HTTP 500" in str(failure)
     assert "ReadTimeout" in str(failure)
-    assert scraper.next_refresh_state().pending == ["S2", "S5"]
+    assert "Stopped early" not in str(failure)
+    assert scraper.next_refresh_state().pending == ["S2", "S4", "S6", "S8"]
 
 
 @pytest.mark.parametrize(
@@ -555,6 +648,7 @@ def test_scattered_failures_dont_stop_the_run_but_still_fail_it(monkeypatch) -> 
     [
         lambda: httpx.Response(200, json={"success": True}),
         lambda: httpx.Response(200, json={"success": False, "result": full_bill("S1")}),
+        lambda: httpx.Response(500, json={"success": True, "result": full_bill("S1")}),
         lambda: httpx.Response(200, text="not json"),
         lambda: httpx.Response(
             200,
@@ -589,18 +683,68 @@ def test_a_404_counts_as_a_removal_not_a_failure(monkeypatch, capsys) -> None:
 
 
 def test_a_run_of_404s_stops_the_run_and_keeps_those_bills(monkeypatch) -> None:
-    gone = list(numbered("A", MAX_REMOVALS_IN_A_ROW))
+    gone = list(numbered("A", 10))
     api = FakeOpenLeg(print_nos=["S1", "S2"])
     install(monkeypatch, api)
     scraper = scraper_for()
-    scraper.refresh_state = _state("S1", *gone, "S2")
+    scraper.refresh_state = _state("A99", "S1", *gone, "S2")
 
     bills, failure = drain(scraper)
 
     assert [bill.number for bill in bills] == ["S1"]
     assert failure is not None
-    assert "404" in str(failure)
+    assert "10 bills in a row returned HTTP 404" in str(failure)
     assert scraper.next_refresh_state().pending == ["S2", *gone]
+    assert scraper._removed == ["A99"]
+
+
+def test_nine_404s_in_a_row_dont_stop_the_run(monkeypatch) -> None:
+    gone = list(numbered("A", 9))
+    api = FakeOpenLeg(print_nos=["S1"])
+    install(monkeypatch, api)
+    scraper = scraper_for()
+    scraper.refresh_state = _state(*gone, "S1")
+
+    bills, failure = drain(scraper)
+
+    assert [bill.number for bill in bills] == ["S1"]
+    assert failure is None
+    assert scraper._removed == gone
+
+
+def test_a_404_ends_a_run_of_failures(monkeypatch) -> None:
+    # A 404 means the API answered, so it doesn't look like an outage.
+    pending = ["S1", "S2", "A1", "S3", "S4", "A2", "S5"]
+    api = FakeOpenLeg(
+        print_nos=[n for n in pending if n.startswith("S")],
+        replies={n: status(500) for n in pending if n.startswith("S")},
+    )
+    install(monkeypatch, api)
+    scraper = scraper_for()
+    scraper.refresh_state = _state(*pending)
+
+    _, failure = drain(scraper)
+
+    assert api.bill_names() == pending
+    assert failure is not None
+    assert "Stopped early" not in str(failure)
+    assert scraper._removed == ["A1", "A2"]
+
+
+def test_a_failure_ends_a_run_of_404s(monkeypatch) -> None:
+    gone = list(numbered("A", 18))
+    pending = [*gone[:9], "S1", *gone[9:]]
+    api = FakeOpenLeg(print_nos=["S1"], replies={"S1": status(500)})
+    install(monkeypatch, api)
+    scraper = scraper_for()
+    scraper.refresh_state = _state(*pending)
+
+    _, failure = drain(scraper)
+
+    assert api.bill_names() == pending
+    assert failure is not None
+    assert "Stopped early" not in str(failure)
+    assert scraper._removed == gone
 
 
 def test_scattered_404s_dont_add_up(monkeypatch) -> None:
@@ -943,6 +1087,19 @@ def test_no_failure_shows_the_key(monkeypatch, capsys, mode, real_httpx) -> None
     assert KEY not in captured.err
     # The API did see the key, so the check above means something.
     assert any(KEY in str(request.url) for request in api.requests)
+
+
+def test_a_failed_call_leaves_the_error_naming_its_url_out_of_its_traceback(monkeypatch) -> None:
+    # The scraper turns this exception into a ScrapeFailed that drops it as well,
+    # so only a direct call can show this layer on its own.
+    api = FakeOpenLeg(print_nos=["S1"], replies={"S1": _ReadErrorNamingItsUrl})
+    install(monkeypatch, api)
+
+    with pytest.raises(_ApiCallFailed) as caught:
+        scraper_for()._get_api("/bills/2025/S1", {})
+
+    assert KEY in str(api.requests[-1].url)
+    assert KEY not in "".join(traceback.format_exception(caught.value))
 
 
 OUTCOMES = {

@@ -116,8 +116,9 @@ class _ApiCallFailed(Exception):
     @property
     def stops_the_run(self) -> bool:
         # Every later request would meet the same thing: a revoked key, a request
-        # the API now refuses, or a rate limit that outlasted our retries.
-        return self.status is not None and 400 <= self.status < 500 and self.status != 404
+        # the API now refuses, or a rate limit that outlasted our retries. A 404
+        # speaks for one bill, and _record_failure deals with it before asking this.
+        return self.status is not None and 400 <= self.status < 500
 
 
 def _base_print_no(item: object) -> str:
