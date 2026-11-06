@@ -606,7 +606,8 @@ def _bill(actions: list[BillAction], number: str = "HB1") -> Bill:
     )
 
 
-def _ci_run(tmp_path: Path, bills_scraped: list[Bill], name: str) -> dict[str, int]:
+def _ci_run(tmp_path: Path, bills_scraped: list[Bill], name: str,
+            jurisdiction: str = "us-zz") -> dict[str, int]:
     """One refresh as CI runs it: an empty SQLite, one scrape, one sync."""
     path = tmp_path / f"{name}.sqlite"
     conn = sqlite3.connect(path)
@@ -614,12 +615,13 @@ def _ci_run(tmp_path: Path, bills_scraped: list[Bill], name: str) -> dict[str, i
         conn.executescript((SQLITE_MIGRATIONS / migration).read_text())
     conn.execute(
         "INSERT OR IGNORE INTO jurisdictions (code, name, level, source_url)"
-        " VALUES ('us-zz', 'Test state', 'state', 'https://example.test')"
+        " VALUES (?, 'Test state', 'state', 'https://example.test')",
+        (jurisdiction,),
     )
     conn.commit()
     conn.close()
     bills_db.write(
-        ScrapeResult(jurisdiction="us-zz", session=Session(name="2026"), bills=bills_scraped),
+        ScrapeResult(jurisdiction=jurisdiction, session=Session(name="2026"), bills=bills_scraped),
         db_path=str(path),
     )
     return supabase_sync.sync(str(path))
