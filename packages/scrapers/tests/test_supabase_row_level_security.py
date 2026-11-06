@@ -31,6 +31,10 @@ view and role, they check that:
   doesn't deadlock with the bill page, and changes nothing when it runs again;
 - on a jurisdiction of 12,000 bills, a list filtered to one rare kind reads the
   new index.
+
+They also check that the refresh state migration moves only New York's J, R and B
+prints to the upper chamber, changes nothing when it runs again, and undoes itself
+whole if a move would collide with a row already there.
 """
 
 from __future__ import annotations
@@ -749,7 +753,10 @@ insert into bills.encode_queue (bill_id, citation, reason)
 # One row for each table a migration after this one creates. The replay seeds
 # them after the last migration, and test_each_role_reads_what_the_owner_reads
 # fails while any table or view has no row.
-LATER_SEED_ROWS = ""
+LATER_SEED_ROWS = """
+insert into bills.refresh_state (jurisdiction, session_name, feed_cursor, pending)
+  values ('zz', 'Test session', '2026-11-06T00:00:00', '{S1}');
+"""
 
 
 def _files(before_rls: bool) -> list[Path]:
@@ -1035,6 +1042,27 @@ def test_the_service_role_upserts_as_the_sync_does(replay):
         "on conflict (code) do update set name = excluded.name returning name",
     )
     assert renamed == "Renamed"
+
+
+def test_the_service_role_saves_refresh_state_as_the_sync_does(replay):
+    # The sync posts pending as a JSON array, the way it posts bills.subjects.
+    def upsert(pending: str) -> str:
+        row = (
+            '{"jurisdiction": "zz", "session_name": "Test session", '
+            f'"feed_cursor": "2026-11-07T00:00:00", "pending": {pending}}}'
+        )
+        return replay.database.as_role(
+            "service_role",
+            "insert into bills.refresh_state (jurisdiction, session_name, feed_cursor, pending) "
+            "select jurisdiction, session_name, feed_cursor, pending "
+            f"from json_populate_recordset(null::bills.refresh_state, '[{row}]') "
+            "on conflict (jurisdiction, session_name) do update "
+            "set feed_cursor = excluded.feed_cursor, pending = excluded.pending "
+            "returning feed_cursor, to_jsonb(pending)",
+        )
+
+    assert upsert('["A1", "J2"]') == '2026-11-07T00:00:00|["A1", "J2"]'
+    assert upsert("[]") == "2026-11-07T00:00:00|[]"
 
 
 DROP_EVERY_POLICY = """
@@ -1434,3 +1462,118 @@ def test_file_boolean_parser_matches_postgres(probe, words):
     ).splitlines()
     expected = [{True: "true", False: "false", None: "invalid"}[_pg_bool(word)] for word in words]
     assert parsed == expected
+
+
+# --- The refresh state migration ----------------------------------------------
+
+
+REFRESH_STATE_MIGRATION = "20261106140000_refresh_state.sql"
+NEW_YORK_SESSION_ID = "00000000-0000-4000-8000-000000000005"
+# Each print number, with its chamber before and after the migration.
+NEW_YORK_PRINTS = {
+    "S1": ("upper", "upper"),
+    "A1": ("lower", "lower"),
+    "J1": ("lower", "upper"),
+    "R1": ("lower", "upper"),
+    "B1": ("lower", "upper"),
+    "K1": ("lower", "lower"),
+    "C1": ("lower", "lower"),
+    "E1": ("lower", "lower"),
+    "Junk": ("lower", "lower"),
+}
+
+
+def _new_york_bill(number: str, chamber: str) -> str:
+    return (
+        "insert into bills.bills (jurisdiction, session_id, chamber, number, source_url, title) "
+        f"values ('us-ny', '{NEW_YORK_SESSION_ID}', '{chamber}', '{number}', "
+        "'https://example.test/', 'Test bill');"
+    )
+
+
+def _bills_by_number(database: Database) -> list[str]:
+    return database.run(
+        "select id, jurisdiction, number, chamber from bills.bills "
+        "order by jurisdiction, number, chamber"
+    ).splitlines()
+
+
+@pytest.fixture
+def before_refresh_state(copy_of, pre: Database) -> Database:
+    """The schema just before the refresh state migration, with New York's prints."""
+    database = copy_of(pre)
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if RLS_MIGRATION <= path.name < REFRESH_STATE_MIGRATION:
+            database.run_file(path)
+    database.run(
+        "insert into bills.jurisdictions (code, name, level, source_url) "
+        "values ('us-ny', 'New York', 'state', 'https://example.test/') "
+        "on conflict (code) do nothing;"
+        f"insert into bills.sessions (id, jurisdiction, name) "
+        f"values ('{NEW_YORK_SESSION_ID}', 'us-ny', 'Test session');"
+        + "".join(_new_york_bill(number, before) for number, (before, _) in NEW_YORK_PRINTS.items())
+        # Another jurisdiction's J1 stays where it is.
+        + "insert into bills.bills (jurisdiction, session_id, chamber, number, source_url, title) "
+        f"values ('zz', '{SESSION_ID}', 'lower', 'J1', 'https://example.test/', 'Test bill');"
+    )
+    return database
+
+
+def test_the_migration_moves_only_new_yorks_senate_prints(before_refresh_state):
+    database = before_refresh_state
+    ids_before = database.run("select id from bills.bills order by id")
+
+    database.run_file(MIGRATIONS / REFRESH_STATE_MIGRATION)
+
+    chambers = dict(
+        line.split("|")
+        for line in database.run(
+            "select number, chamber from bills.bills where jurisdiction = 'us-ny'"
+        ).splitlines()
+    )
+    assert chambers == {number: after for number, (_, after) in NEW_YORK_PRINTS.items()}
+    assert database.run(
+        "select chamber from bills.bills where jurisdiction = 'zz' and number = 'J1'"
+    ) == "lower"
+    # Child rows point at these ids, and the sync adopts them, so they have to stay.
+    assert database.run("select id from bills.bills order by id") == ids_before
+
+
+def test_the_refresh_state_migration_changes_nothing_when_it_runs_again(before_refresh_state):
+    database = before_refresh_state
+    database.run_file(MIGRATIONS / REFRESH_STATE_MIGRATION)
+    database.run(
+        "insert into bills.refresh_state (jurisdiction, session_name, feed_cursor, pending) "
+        "values ('us-ny', 'Test session', '2026-11-06T00:00:00', '{S1}')"
+    )
+    bills = _bills_by_number(database)
+    state = database.run("select * from bills.refresh_state")
+
+    database.run_file(MIGRATIONS / REFRESH_STATE_MIGRATION)
+
+    assert _bills_by_number(database) == bills
+    assert database.run("select * from bills.refresh_state") == state
+    assert database.run(
+        "select count(*) from pg_policies "
+        "where schemaname = 'bills' and tablename = 'refresh_state'"
+    ) == "1"
+
+
+def test_a_move_that_would_collide_undoes_the_whole_migration(before_refresh_state):
+    database = before_refresh_state
+    database.run(_new_york_bill("J1", "upper"))
+    bills = _bills_by_number(database)
+
+    with pytest.raises(PsqlError, match="23505"):
+        database.run_file(MIGRATIONS / REFRESH_STATE_MIGRATION)
+
+    # The workflow stops on the missing table, so no run reaches the sync.
+    assert database.run("select to_regclass('bills.refresh_state') is null") == "t"
+    assert _bills_by_number(database) == bills
+
+    database.run(
+        "delete from bills.bills where jurisdiction = 'us-ny' "
+        "and number = 'J1' and chamber = 'lower'"
+    )
+    database.run_file(MIGRATIONS / REFRESH_STATE_MIGRATION)
+    assert database.run("select to_regclass('bills.refresh_state') is null") == "f"

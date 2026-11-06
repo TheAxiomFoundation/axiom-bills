@@ -34,8 +34,8 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     # Cap runtime so a wedged run can't hold the (cancel-in-progress: false)
-    # queue for hours. Incremental hourly refreshes finish in minutes; a rare
-    # manual full_refresh that needs longer can be re-run or bumped.
+    # queue for hours. A cancelled job syncs nothing, so a scrape that can't
+    # finish inside the cap has to stop itself: see the time budget below.
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -78,15 +78,50 @@ jobs:
             exit 0
           fi
           if [[ "$STATE" == "us-ny" && -z "${NYSENATE_API_KEY:-}" ]]; then
-            echo "Skipping us-ny: NYSENATE_API_KEY is not configured."
+            if [[ -n "${REQUESTED_STATE:-}" ]]; then
+              echo "::error::Can't refresh us-ny: NYSENATE_API_KEY is not configured."
+              exit 1
+            fi
+            echo "::warning::Skipping us-ny: NYSENATE_API_KEY is not configured."
             exit 0
           fi
 
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "Starting $STATE at $started_at"
-          uv run --project packages/scrapers axiom-bills scrape --jurisdiction "$STATE"
+
+          scrape_status=0
+          if [[ "$STATE" == "us-ny" ]]; then
+            uv run --project packages/scrapers axiom-bills hydrate-refresh-state --jurisdiction "$STATE"
+            # The budget leaves 32 of the job's 60 minutes: under a minute to get
+            # here, 2.25 for the request in flight when time runs out, and 28 for
+            # the steps below, the longest they took after a full New York scrape
+            # in June 2026. A budget this size also caps a run at 16,800 bills.
+            uv run --project packages/scrapers axiom-bills scrape --jurisdiction "$STATE" --time-budget-minutes 28 || scrape_status=$?
+          else
+            uv run --project packages/scrapers axiom-bills scrape --jurisdiction "$STATE"
+          fi
+
+          # Exit 3 (some bills failed) and exit 4 (out of time) both leave bills
+          # worth syncing and a saved place. Anything else stops here, unsynced.
+          if [[ "$scrape_status" != 0 && "$scrape_status" != 3 && "$scrape_status" != 4 ]]; then
+            echo "::error::$STATE: the scrape failed with exit $scrape_status, so this run synced nothing."
+            exit "$scrape_status"
+          fi
+
           uv run --project packages/scrapers axiom-bills reclassify --jurisdiction "$STATE"
           uv run --project packages/scrapers axiom-bills reclassify-kinds --jurisdiction "$STATE"
           uv run --project packages/scrapers axiom-bills extract-citations --jurisdiction "$STATE"
           uv run --project packages/scrapers axiom-bills sync-supabase
+          # Only after the sync: the saved state says these bills reached Supabase.
+          if [[ "$STATE" == "us-ny" ]]; then
+            uv run --project packages/scrapers axiom-bills push-refresh-state --jurisdiction "$STATE"
+          fi
           echo "Finished $STATE at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          if [[ "$scrape_status" == 3 ]]; then
+            echo "::error::$STATE: some bills failed. This run synced the rest, and the next run retries the failures."
+            exit 3
+          fi
+          if [[ "$scrape_status" == 4 ]]; then
+            echo "::warning::$STATE: the time budget ran out. This run synced what it fetched, and the next run continues from there."
+          fi

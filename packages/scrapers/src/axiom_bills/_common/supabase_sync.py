@@ -21,11 +21,14 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import httpx
 
+from .db import refresh_states, write_refresh_state
+from .models import RefreshState
 from .section_preservation import (
     has_corpus_miss,
     preserve_stored_sections,
@@ -176,6 +179,11 @@ def _upsert(client: httpx.Client, table: str, rows: list[dict], *,
     return written
 
 
+def _names_a_missing_table(message: str) -> bool:
+    return ("PGRST205" in message or "Could not find the table" in message
+            or ("relation" in message and "does not exist" in message))
+
+
 def _tolerate_missing_table(step: Callable[[], int], *, table: str,
                             migration: str) -> int:
     """Run one sync step, skipping it when the REMOTE table is missing.
@@ -190,9 +198,7 @@ def _tolerate_missing_table(step: Callable[[], int], *, table: str,
     try:
         return step()
     except RuntimeError as exc:
-        msg = str(exc)
-        if ("PGRST205" in msg or "Could not find the table" in msg
-                or ("relation" in msg and "does not exist" in msg)):
+        if _names_a_missing_table(str(exc)):
             print(
                 f"WARNING: remote table {table} missing — apply "
                 f"supabase/migrations/{migration} in the Supabase SQL "
@@ -1241,3 +1247,64 @@ def hydrate_reconciliations(db_path: str) -> dict[str, int]:
         local.commit()
     local.close()
     return counts
+
+
+REFRESH_STATE_MIGRATION = "20261106140000_refresh_state.sql"
+
+
+def hydrate_refresh_state(db_path: str, jurisdiction: str) -> dict[str, int]:
+    """Copy one jurisdiction's saved refresh state from Supabase into local SQLite.
+
+    A missing table stops the run, where other steps only warn. With no state, a
+    New York refresh starts a full load, and the migration that creates the table
+    also relabels the rows the sync would otherwise insert a second time.
+    """
+    with _client() as client:
+        try:
+            rows = _select_all(client, "refresh_state", {
+                "select": "session_name,feed_cursor,pending",
+                "jurisdiction": f"eq.{jurisdiction}",
+                "order": "session_name.asc",
+            })
+        except RuntimeError as exc:
+            if _names_a_missing_table(str(exc)):
+                raise RuntimeError(
+                    "Remote table refresh_state is missing: apply supabase/migrations/"
+                    f"{REFRESH_STATE_MIGRATION} in the Supabase SQL editor."
+                ) from exc
+            raise
+    for row in rows:
+        write_refresh_state(
+            jurisdiction,
+            row["session_name"],
+            RefreshState(feed_cursor=row["feed_cursor"], pending=row["pending"]),
+            db_path,
+        )
+    return {"sessions": len(rows)}
+
+
+def push_refresh_state(db_path: str, jurisdiction: str) -> dict[str, int]:
+    """Save one jurisdiction's refresh state to Supabase.
+
+    Sync first: the saved state tells the next run that every bill it doesn't
+    list has reached Supabase, so a run whose sync failed must never push it.
+    """
+    states = refresh_states(jurisdiction, db_path)
+    if not states:
+        raise RuntimeError(f"No local refresh state to push for {jurisdiction}.")
+    updated_at = datetime.now(timezone.utc).isoformat()
+    rows = [
+        {
+            "jurisdiction": jurisdiction,
+            "session_name": session_name,
+            "feed_cursor": state.feed_cursor,
+            "pending": state.pending,
+            "updated_at": updated_at,
+        }
+        for session_name, state in states.items()
+    ]
+    with _client() as client:
+        written = _upsert(
+            client, "refresh_state", rows, on_conflict="jurisdiction,session_name"
+        )
+    return {"sessions": written}
